@@ -1,0 +1,39 @@
+---
+= ÖREB-Kataster richtig gemacht #15 - ÖREB-Proxy-Service
+Stefan Ziegler
+2023-08-14 
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: ÖREB,ÖREB-Kataster,Proxy,Spring Boot
+:idprefix:
+---
+_Update 2023-08-17:_ Die Suche eines EGRID mittels Adresse funktioniert. Was nicht geht ist die Suche mittels NBIdent und GB-Nummer. Das scheint mir die Api nicht herzugeben.
+
+Es gibt https://s.geo.admin.ch/a120486ae5[27 ÖREB-Webservices]. Jeder Webservice ist unter einer anderen URL erreichbar. Wenn ich als Kunde nicht nur in einem Kanton ÖREB-Katasterauszüge beziehen wollte, fände ich diesen Umstand bemühend. Ich muss 27 Endpunkte verwalten und vor allem muss ich bei jeder Koordinate oder jedem EGRID irgendwie herausfinden, welchen Service/Kanton ich nun verwenden muss. Es muss ein ÖREB-Proxy her, der die standardisierten Requests entgegennimmt und nachdem er herausgefunden hat, welcher Kanton betroffen ist, den Request ausführt und die Antwort an den Client zurückliefert. Ein erster Prototyp (oder im Solothurnischen Neusprech: Rocksolide Top-of-the-Pops-Application, also Champions League) steht: https://proxy.oereb.services[https://proxy.oereb.services].
+
+Ein paar Testrequests:
+
+- https://proxy.oereb.services/getegrid/xml/?EN=2600595,1215629 (Solothurn)
+- https://proxy.oereb.services/getegrid/xml/?EN=2757735,1224129 (Liechtenstein)
+- https://proxy.oereb.services/getegrid/xml/?GNSS=7.44646,47.09171 (Solothurn)
+- https://proxy.oereb.services/extract/xml/?EGRID=CH807306583219 (Solothurn)
+- https://proxy.oereb.services/extract/xml/?EGRID=CH767982496078 (Basel-Landschaft)
+
+Den Quellcode ist auf https://github.com/edigonzales/oereb-proxy[Github]. 
+
+Was wird unterstützt? 
+
+Es wird nur XML und PDF als Format unterstützt. XML ist im Gegensatz zu JSON zwingend und es gibt mindestens zwei Kantone, die JSON nicht anbieten. Es werden die Requests &laquo;GetEgrid&raquo; und &laquo;Extract&raquo; angeboten. Die beiden anderen könnte man aber problemlos noch umsetzen. Es funktionieren auch nicht ganz alle Aufrufe. Der GetEgrid-Request mit einer Adresse geht nicht. Dazu später gleich mehr.
+
+Es sollten alle Kantone freigeschaltet sein, die den Kataster in der Version 2 anbieten (und Fürstentum Liechtenstein). Falls der Request ein Kanton betrifft, der nicht gefunden wird, wird der Statuscode 204 zurückgeliefert.
+
+Umgesetzt habe ich es mit Spring Boot. Das Ganze mit GraalVM in ein Native Binary runterkompiliert. So startet die Java-Anwendung in 0.06 Sekunden und braucht massiv weniger RAM. 
+
+Der Service selber ist bewusst https://github.com/edigonzales/oereb-proxy/blob/main/src/main/java/ch/so/agi/oereb/MainController.java#L72[dumm] gehalten. Er soll nur Requests entgegennehmen und beim betroffenen Kanton den Auszug anfordern. Die Antwort wird nicht verändert. Es gibt zusätzlich einen &laquo;redirect&raquo;-Modus. In diesem Fall wird der betroffene Kanton eruiert und anschliessend wird zum kantonalen ÖREB-Webservice _weitergeleitet_. Das hat den Nachteil, dass Geschichten wie http://blog.sogeo.services/blog/2023/01/11/oereb-kataster-richtig-gemacht-13.html[CORS] wieder Probleme machen könnten.
+
+Die Hauptschwierigkeit liegt eigentlich darin herauszufinden, welcher Kanton betroffen ist. Wenn man bei der GetEgrid-Anfrage beginnt, muss man den Kanton anhand einer Koordinate herausfinden. Ich habe das früher für meinen https://map.oereb.services/[Viewer] mit sequenzieller und auch paralleler Abfrage aller Kantonsservices probiert. Das geht viel zu lange. Wenn ich schon von 27 Services abhängig bin, kann ich mich auch noch von einem weiteren Service abhängig machen: Die GeoAdmin API. Man muss zwar im vielfälltigen Angebot suchen, bis man den passenden Dienst hat. Aber danach klappt es einwandfrei. Die Koordinate beim GetEgrid-Request kann auch als WGS84 geliefert werden. Dafür gibt es von Swisstopo ebenfalls einen https://geodesy.geo.admin.ch/reframe/wgs84tolv95[Dienst]. Warum dieser jedoch nicht unter der https://api3.geo.admin.ch/services/sdiservices.html[GeoAdmin API] dokumentiert ist, weiss ich nicht. Für die Variante mit der Adresse (Ortschaft, Strasse, Hausnummer) habe ich keine Variante gefunden, die mir eindeutig den EGRID zurückliefert. Anyone?
+
+Wenn man den EGRID hat und den eigentlichen Auszug bestellen will, muss man anhand des EGRID den betroffenen Kanton eruieren. Auch das geht mit der GeoAdmin API.
+
+Und das wars eigentlich auch schon. Mit geodienste.ch[geodienste.ch] kann ich an einer Stelle die MGDM (Daten und Dienste) beziehen. Warum soll das nicht auch für den ÖREB-Kataster möglich sein?
+

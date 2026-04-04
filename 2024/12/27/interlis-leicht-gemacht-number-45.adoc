@@ -1,0 +1,309 @@
+---
+= INTERLIS leicht gemacht #45 - INTERLIS goes OLAP
+Stefan Ziegler
+2024-12-27
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,ili2db,DuckDB,OLAP
+:idprefix:
+---
+So, ich habe nochmals ein paar Stunden in den https://blog.sogeo.services/blog/2024/01/15/interlis-leicht-gemacht-number-40.html[ili2duckdb-Flavor] https://github.com/edigonzales/ili2db/commits/duckdb/[investiert] und schlussendlich einen https://github.com/claeis/ili2db/pull/556[Pull-Request] gemacht. Wenn/falls er gemerget wird, gibt es https://github.com/claeis/ili2db/[`ili2db`] nun auch für eine OLAP-Datenbank. Interessanterweise ist mein erster Einsatzzweck nicht mal per se eine Analyse, sondern eher klassisches Geoprocessing (wobei: wo genau hört das eine auf und beginnt das andere?). Zuerst aber ein paar Worte zur Umsetzung von `ili2duckdb`:
+
+Wie im ersten https://blog.sogeo.services/blog/2024/01/15/interlis-leicht-gemacht-number-40.html[Beitrag] zu `ili2duckdb` erwähnt, ist die Umsetzung relativ straight forward nach dem Motto: Wo ein JDBC-Treiber, da auch ein ili2xy. Notfalls muss/kann man sich sogar einen eigenen JDBC-Treiber (oder Wrapper) schreiben (siehe https://github.com/claeis/ili2db/tree/master/ili2fgdb/src/ch/ehi/ili2fgdb/jdbc[_ili2fgdb_]). Im Regelfall reicht es, wenn man fünf abstrakte Klassen erweitert resp. Interfaces implementiert und schon hat man seinen ili2db-Flavor. Ili2db ist eben nicht bloss ein Werkzeug, sondern auch ein Framework, um weitere Flavors umzusetzen. Die Arbeiten mit diesem Framework gestalten sich meiner Meinung nach als angenehm und man durchschaut relativ schnell, wo man was anpassen muss. So gibt es z.B. eine zu implementierende Methode, die sich darum kümmert wie aus einem IOM-Koordinaten-Objekt ein Java-Objekt gemacht wird, welches anschliessend mit einer Geofunktion der Datenbank in die Datenbank geschrieben wird.
+
+[source,java,linenums]
+----
+@Override
+public Object fromIomCoord(IomObject value, int srid, boolean is3D)
+  throws SQLException, ConverterException {
+  if (value!=null) {
+      Iox2wkb conv=new Iox2wkb(2, ByteOrder.BIG_ENDIAN, false);				
+      try {
+        return conv.coord2wkb(value);
+      } catch (Iox2wkbException ex) {
+        throw new ConverterException(ex);
+      }
+    }
+  return null;
+}
+----
+
+Die dazugehörige Geofunktion muss ebenfalls definiert werden, indem man folgende Methode implementiert (resp. überschreibt):
+
+[source,java,linenums]
+----
+@Override
+public String getInsertValueWrapperCoord(String wkfValue, int srid) {
+  return "ST_GeomFromWKB("+wkfValue+"::blob)";
+}
+----
+
+Das explizite Casten nach `blob` ist meines Erachtens eine/ein https://github.com/duckdb/duckdb-spatial/issues/471[Unschönheit/Bug] von DuckDB Spatial. Btw: Das Variable-Naming als `wkfValue` finde ich unlogisch und ungünstig (oder ich steh' auf dem Schlauch... es wird nicht der WKF-Wert geliefert und es ist ein Prepared-Statement, d.h. der String ist nichts anderes als ein Fragezeichen). 
+
+Die `fromIomCoord`-Methode kann für jeden Flavor völlig anders funktionieren. Für `ili2gpkg` muss eine andere Methode für die Umwandlung nach WKB verwendet werden, weil GeoPackage ein leicht anderes WKB-Format verwendet. Das sieht so aus:
+
+[source,java,linenums]
+----
+@Override
+public java.lang.Object fromIomCoord(IomObject value, int srsid, boolean is3D)
+  throws SQLException, ConverterException {
+  if (value!=null) {
+      Iox2gpkg conv=new Iox2gpkg(is3D?3:2);
+    try {
+      return conv.coord2wkb(value,srsid);
+    } catch (Iox2wkbException ex) {
+      throw new ConverterException(ex);
+    }
+  }
+  return null;
+}
+----
+
+So geht das nun weiter für mehr oder weniger sämtliche möglichen Datentypen (nicht nur Geometrien), wie z.B. Date, UUID etc. pp. Auch muss ein ID-Generator implementiert werden, weil nicht zwingend jede Datenbank Sequenzen gleich unterstützt.
+
+Und das Coole ist, dass ich mich um alles andere nicht zu kümmern brauche. Jede der gefühlt 1000 ili2db-Optionen funktioniert mit jedem neuen Flavor. Ein super Fundament wurde hier geschaffen.
+
+Es wäre natürlich zu einfach und gelogen, wenn es nicht doch noch einen kleinen Stolperstein (oder auch zwei) gegeben hätte. Als ich als erstes die DuckDB-Version von 0.9.2 auf die aktuelle Version 1.1.3 upgedatet habe und einen Testrun machte, hing sich `ili2duckdb` auf. Während des Testruns ging plötzlich nichts mehr. Es stellte sich heraus, dass es einen https://github.com/duckdb/duckdb-java/issues/101[Bug] (?) gibt. In meinem Fall war nicht die zweite Connection das Problem, sondern ein zweites Statement, ohne das erste zu schliessen. Es dürfte sich aber wohl um den gleichen Bug handeln. Das gleiche Problem tauchte beim Erstellen des Schemas auf. Hier wird die https://github.com/claeis/ehisqlgen/[ehisqlgen-Bibliothek] verwendet und muss deshalb https://github.com/claeis/ehisqlgen/pull/5[gefixed] werden. Der zweite kleine Stolperstein, der es nötig machte den Kern-Testcode an der einen oder anderen Stelle anzupassen, ist die Besonderheit, dass DuckDB nur eine schreibende Connection erlaubt oder mehrere nur-lesende. Das war es aber auch schon.
+
+Erwähnenswert sind ebenfalls Dinge, die wegen DuckDB nicht gehen:
+
+- 3D-Geometrien werden nicht unterstützt und werden nach 2D-Geometrien umgewandelt.
+- Kreisbögen werden nicht unterstützt.
+- SRID wird bei Geometrien nicht unterstützt.
+- Die `ADD CONSTRAINT`-Syntax wird noch nicht unterstützt. Das führt zu fast keinen Constraints auf der Datenbank.
+- Der Geometrie-Index ist zwar vorhanden, jedoch - soweit ich es verstehe - nicht wirklich brauchbar, da z.B. bei `ST_Intersects()` ein Wert zur Planning Time bekannt sein muss.
+
+Was ist nun mein Einsatzzweck? Exemplarisch ein Projekt des Amtes für Raumplanung (ARP). Sie möchten für jede Gemeinde auf Knopfdruck wissen, von welchen raumplanerisch relevanten Themen die Gemeinde betroffen ist. Ihre Idee war es diese Information pro Gemeinde händisch nachzuführen. Obwohl ich mich mit der Grundidee (also sicher nicht mit der händischen Nachführung) anfreunden kann, hadere ich mit dem Glauben, dass das in Realität wirklich gut kommt. Sie haben jetzt schon eine Liste mit über 70 Themen und da es nicht für einen ganz konkreten Anwendungfall gelten soll, sondern für Raumplanung als solches, ist die Antwort dann vielleicht zu allgemein. Naja... Viele der benötigten Daten liegen natürlich in unserer zentralen Datenbank vor. Unter den 70 Themen sind aber auch viele Bundesinventare. Diese Daten importieren wir nicht, sondern zeigen nur den WMS des Bundes im Web GIS Client an. Wie finde ich nun heraus, ob die Gemeinde Solothurn vom Bundesinventar Amphibienlaichgebiete betroffen ist?
+
+Eine erste Idee war den REST-Service anzuzapfen und die JSON-Antwort als Datei zu speichern. Diese in die PostgreSQL-Datenbank zu importieren und dann mit den JSON-Funktionen von PostgreSQL bisschen Geo-Magic zu machen. Das alles ginge heute bereits mit https://gretl.app/[GRETL] problemlos. Wenn ich den REST-Service aber richtig verstehe, werden nur 200 Objekte zurückgeliefert (dokumentiert sind 50, was falsch zu sein scheint). Weil ich ja nicht sicher sein kann, dass ich nie mehr als 200 habe, müsste ich mehrere Requests (Offsets werden unterstützt) machen. Das fand ich dann bisschen zu workaroundig/handgestrickt. Eine andere Möglichkeit, die wir im Angebot haben, ist das Hochfahren einer temporären PostgreSQL-Datenbank. In diese wird dann mit GRETL die angebotene Shapedatei der Amphibienlaichgebiete importiert. Das Setup ist aber so, dass wir zur Shapedatei ein &laquo;Dummy-INTERLIS-Modell&raquo; schreiben müssen, um die Tabellen in der DB zu erstellen. Finde ich immer bisschen aufwändig für etwas, was eigentlich nicht von dauerndem Interesse ist. Und genau hier kommt eben `ili2duckdb` ins Spiel.
+
+DuckDB Spatial hat eine https://duckdb.org/docs/extensions/spatial/functions#st_read[`ST_Read()`]-Funktion im Angebot, die ein Wrapper um OGR ist. D.h. ich kann mit dieser Funktion jedes von OGR unterstützte Format via SQL in DuckDB ansprechen und verwenden:
+
+[source,sql,linenums]
+----
+SELECT 
+  *
+FROM 
+  ST_Read('amphibLaichgebiet.shp', spatial_filter_box={min_x: 2590925, min_y: 1212325, max_x: 2645288, max_y: 1263441}::BOX_2D)
+----
+
+Das Tüpfelchen auf dem I wäre, wenn die von Swisstopo angebotenen Zip-Dateien so gepackt wären, dass man GDALs Virtual File System verwenden könnte. Dann müsste man die Dateien nicht mal mehr herunterladen:
+
+[source,bash,linenums]
+----
+ogrinfo -ro -al -so /vsizip/vsicurl/https://data.geo.admin.ch/ch.bafu.bundesinventare-amphibien/data.zip
+----
+
+Als Beweis, dass das gehen würde:
+
+[source,bash,linenums]
+----
+ogrinfo -ro -al -so /vsizip/vsicurl/https://files.geo.so.ch/ch.so.afu.abbaustellen/aktuell/ch.so.afu.abbaustellen.shp.zip
+----
+
+Das Ultra-Tüpfelchen wären natürlich Cloud Native Formate...
+
+Zusammengefasst heisst das: Ich habe mit DuckDB eine dateibasierte Datenbank, die Geoprocessing und INTERLIS unterstützt. Es gibt mit dieser Variante viel weniger Overhead und Komplexität: kein Datenmodell für Wegwerf-Daten, kein Dockercontainer, der gestartet werden muss.
+
+Ein kleines INTERLIS-Datenmodell wird benötigt, um das Wissen zu speichern, welche Gemeinde von welchem Thema betroffen ist. Ad hoc sieht das etwa so aus:
+
+[source,xml,linenums]
+----
+INTERLIS 2.3;
+
+/** !!------------------------------------------------------------------------------
+ *  !! Version    | wer | Änderung
+ *  !!------------------------------------------------------------------------------
+ *  !! 2024-12-27 | sz  | Initialerstellung
+ *  !!==============================================================================
+ */
+!!@ technicalContact=mailto:agi@bd.so.ch
+!!@ furtherInformation=https://geo.so.ch/models/ARP/SO_ARP_SEin_Konfiguration_20241227.uml
+!!@ shortDescription="Datenmodell für die (Teil-)Konfiguration der SEin-App"
+!!@ title="SEin-App Konfiguration"
+MODEL SO_ARP_SEin_Konfiguration_20241217 (de)
+AT "https://arp.so.ch"
+VERSION "2024-12-27"  =
+
+  TOPIC SEin =
+
+    CLASS Gruppe =
+      Name : MANDATORY TEXT*500;
+    END Gruppe;
+
+    CLASS Thema = 
+      Name : MANDATORY TEXT*500;
+      Karte : TEXT*500; !! Eigentlich Layer-ID
+      !! TODO: Transparenz
+    END Thema;
+
+    CLASS Gemeinde =
+      Name : MANDATORY TEXT*200;
+      BFSNr : MANDATORY 2000 .. 3000;
+      UNIQUE BFSNr;
+    END Gemeinde;
+
+    ASSOCIATION Gruppe_Thema =
+      Gruppe_R -- {1} Gruppe;
+      Thema_R -- {0..*} Thema;
+    END Gruppe_Thema;
+
+    ASSOCIATION Thema_Gemeinde =
+      Thema_R -- {0..*} Thema;
+      Gemeinde_R -- {0..*} Gemeinde;
+      ist_betroffen : BOOLEAN;
+    END Thema_Gemeinde;
+
+  END SEin;
+
+END SO_ARP_SEin_Konfiguration_20241217.
+----
+
+Der Prozess (aka GRETL-Job) sieht circa so aus:
+
+1. DuckDB-Datei mit Konfigurations-INTERLIS-Datenmodell erstellen.
+2. Hoheitsgrenzen importieren (z.B. von https://files.geo.so.ch/ch.so.agi.av.hoheitsgrenzen/aktuell/[hier])
+3. Pro Gemeinde einen Eintrag in der Klasse Gemeinde erstellen. 
+4. Loop über alle Gemeinden und prüfen, ob ein Amphibienlaichgebiet innerhalb der Gemeinde liegt und Eintrag in die Beziehungstabelle (Thema_Gemeinde) erstellen.
+
+Der relevante Teil des GRETL-Jobs sieht wie folgt aus:
+
+[source,groovy,linenums]
+----
+tasks.register('downloadAmphibien', Download) {
+    src "https://data.geo.admin.ch/ch.bafu.bundesinventare-amphibien/data.zip" 
+    dest pathToTempFolder
+    overwrite true
+}
+
+tasks.register('unzipAmphibien', Copy) {
+    dependsOn 'downloadAmphibien'
+    from zipTree(Paths.get(pathToTempFolder, "data.zip"))
+    into file("$rootDir")
+    include "*LV95*/*.shp" 
+    include "*LV95*/*.dbf" 
+    include "*LV95*/*.shx" 
+}
+
+tasks.register('processInit', SqlExecutor) {
+    database = [dbUri, dbUser, dbPwd]
+    sqlFiles = ["delete.sql"]
+}
+
+def gemeinden = [2401,2402,2403,2404,2405,2406,2407,2408,2421,2422,2424,2425,2426,2427,2428,2430,2445,2455,2457,2461,2463,2464,2465,2471,2472,2473,2474,2475,2476,2477,2478,2479,2480,2481,2491,2492,2493,2495,2497,2499,2500,2501,2502,2503,2511,2513,2514,2516,2517,2518,2519,2520,2523,2524,2525,2526,2527,2528,2529,2530,2532,2534,2535,2541,2542,2543,2544,2545,2546,2547,2548,2549,2550,2551,2553,2554,2555,2556,2571,2572,2573,2574,2575,2576,2578,2579,2580,2581,2582,2583,2584,2585,2586,2601,2611,2612,2613,2614,2615,2616,2617,2618,2619,2620,2621,2622]
+
+gemeinden.each { gemeinde ->
+    tasks.register("processGemeinde_$gemeinde", SqlExecutor) {
+        dependsOn 'processInit'
+        database = [dbUri, dbUser, dbPwd]
+        sqlFiles = ["gemeinde.sql", "amphibien.sql"]
+        sqlParameters = [bfsnr: gemeinde as String]
+    }
+}
+
+task processAll() {
+    description = "Sql aggregation task."
+    dependsOn {
+        tasks.findAll { task -> task.name.startsWith('processGemeinde_') }
+    }
+}
+----
+
+Die eigentliche Businesslogik (Ist die Gemeinde betroffen? Abfüllen der Konfig-Tabellen.) passiert in SQL:
+
+[source,sql,linenums]
+----
+LOAD spatial;
+
+CREATE TEMP TABLE t_betroffen AS 
+WITH gemeinde AS 
+(
+    SELECT 
+        g2.t_id AS gemeinde_t_id,
+        gemeindename,
+        bfs_gemeindenummer,
+        geometrie 
+    FROM 
+        agi_hoheitsgrenzen_pub.hoheitsgrenzen_gemeindegrenze AS g1
+        INNER JOIN sein_konfig.sein_gemeinde AS g2
+        ON g1.bfs_gemeindenummer = g2.bfsnr
+    WHERE 
+        bfs_gemeindenummer = ${bfsnr}
+)
+,
+themadaten AS 
+(
+    SELECT 
+        ST_Multi(geom) AS geom
+    FROM 
+    ST_Read('Amphibien_LV95/amphibLaichgebiet.shp', spatial_filter_box={min_x: 2590925, min_y: 1212325, max_x: 2645288, max_y: 1263441}::BOX_2D)
+
+)
+,
+thema AS 
+(
+    SELECT 
+        t_id AS thema_t_id
+    FROM 
+        sein_konfig.sein_thema 
+    WHERE
+        karte = 'ch.bafu.bundesinventare-amphibien'
+)
+,
+betroffen AS
+(
+    SELECT 
+        gemeinde.gemeinde_t_id,
+        gemeinde.gemeindename,
+        gemeinde.bfs_gemeindenummer,
+        ist_betroffen,
+        thema.thema_t_id
+    FROM 
+    (
+        SELECT 
+            count(*) > 0 AS ist_betroffen
+        FROM 
+            gemeinde 
+            INNER JOIN themadaten 
+            ON ST_Overlaps(gemeinde.geometrie, themadaten.geom)
+    ) AS foo
+    LEFT JOIN gemeinde
+    ON 1=1
+    LEFT JOIN thema 
+    ON 1=1
+)
+SELECT
+    *
+FROM 
+    betroffen
+;
+
+INSERT INTO sein_konfig.sein_thema_gemeinde 
+(
+    thema_r,
+    gemeinde_r,
+    ist_betroffen
+)
+SELECT 
+    thema_t_id,
+    gemeinde_t_id,
+    ist_betroffen
+FROM 
+    t_betroffen
+;
+
+DROP TABLE 
+    t_betroffen
+;
+----
+
+Die Idee ist, dass die Klassen &laquo;Gruppe&raquo; und &laquo;Thema&raquo; durch das Fachamt in der zentralen Datenbank nachgeführt werden. Der GRETL-Job exportiert die Daten aus der zentralen Datenbank und importiert sie in die DuckDB-Datei (siehe Punkt 1 oben). Natürlich muss das SQL angepasst werden oder der GRETL-Job, wenn z.B. ein neues Thema hinzukommt. Übrigens: Eleganter wäre, wenn wir die Klassen in unterschiedliche Topics packen würden. Dann kann ich beim Re-Import nur das &laquo;Gemeinde&raquo;-Topic berücksichtigen.
+
+Es gibt mit DuckDB vielleicht sogar noch eine weniger aufwändige Variante. Man kann aus DuckDB PostgreSQL https://duckdb.org/docs/extensions/postgres.html[direkt ansprechen] und auch Daten zurückschreiben. Somit müsste ich nicht einmal das INTERLIS-Modell in DuckDB erstellen, sondern könnte direkt mit PostgreSQL kommunizieren.
+
+DuckDB, the next big thing, das FME-Boomer alt aussehen lässt.
+
+Links:
+
+- https://drive.google.com/file/d/15T6FgsRXoN9-KNUIG60nScpLG24UWJ89/view?usp=sharing[ili2duckdb-5.2.2-SNAPSHOT.zip]
+

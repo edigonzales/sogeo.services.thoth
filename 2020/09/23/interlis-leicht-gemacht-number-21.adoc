@@ -1,0 +1,225 @@
+---
+= INTERLIS leicht gemacht #21 - INTERLIS ohne INTERLIS
+Stefan Ziegler
+2020-09-23
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,ilivalidator,Jaxb,ili2db
+:idprefix:
+---
+Die Dienststelle muss einige seiner in die Jahre gekommenen Fachanwendungen ablösen und wählt dafür eine &laquo;Plattform&raquo; eines Anbieters aus. Die Idee dahinter ist, dass dank des Plattformgedankens Synergien genützt werden können: technisch aber auch v.a. finanziell. Klingt gut, hat aber auch ein paar gravierende Nachteile. Im konkreten Fall fiel die Wahl auf eine Plattform, die überhaupt nichts mit GIS am Hut hat, aber trotzdem &laquo;GIS machen&raquo; können soll. Das Tragische ist, dass die GIS-Anforderungen eigentlich überschaubar sind: Häufig muss man nur einen Punkt in einer Karte absetzen und ein paar Attribute dazu erfassen. Soweit keine Raketenwissenschaft. 
+
+Für das Verheiraten von GIS-freien Webanwendungen und unserem Web GIS Client haben wir eine https://so.ch/verwaltung/bau-und-justizdepartement/amt-fuer-geoinformation/geoportal/geodienste/ccc-schnittstelle/[Schnittstelle] auf Basis Websocket eingeführt. Damit können sich die beiden Awendungen koppeln und Daten austauschen. Die Fachanwendung muss also nicht &laquo;GIS können&raquo;, sondern nur Websocket und bisschen JSON rumschicken. Im aktuellsten Fall gibt es nun zusätzlich die Anforderung, dass die Geometrien nicht nur Punkte sind, sondern Polygone. Die Polygone müssen zudem sauber, d.h. überlappungsfrei erfasst werden können. Natürlich kann man sowas auch in einem Web GIS Client umsetzen. Das Kosten/Nutzen-Verhältnis muss aber berücksichtigt werden. Vor allem wenn es Werkzeuge wie https://qgis.org[QGIS] gibt, die sehr gute Digitalisierungswerkzeuge mitbringen.
+
+Wie verheiraten wir aber jetzt QGIS mit der Fachanwendung, die im Browser läuft? Einerseits sollen zu einem Geschäftsfall in der Fachanwendung Geometrien erfasst werden und andererseits sollen die gemeinsamen Daten (also Geometrie und Sachattribute aus der Fachanwendung) regelmässig für Interessierte im Web GIS Client aktualisiert und dargestellt werden. Was wir nicht machen wollen, ist für QGIS einen Websocket-Provider entwickeln lassen. Was machen? Back to the roots: Datenaustausch mit Dateien und bisschen Copy/Paste. Grundidee ist etwa folgende:
+
+Der Anwender beginnt mit der Erfassung des Polygons / Multipolygons in QGIS. Diese Geometrie erhält einen fixen Identifikator. Diesen Identifikator muss man in die Fachanwendung übertragen und dort können die weiteren Informationen zum Geschäftsfall erfasst werden. Dieses Vorgehen öffnet natürlich Tür und Tor für Fehler. Wie damit umgehen? Wie verhindern? INTERLIS.
+
+Wir müssen nur ein Datenmodell erstellen, das die Geometrie von den Sachdaten in zwei Klassen aufteilt und eine Beziehung zwischen den Klassen herstellen. Die Beziehung muss jedoch so definiert werden (Zauberwort `EXTERNAL`), dass Bezüge zwischen Objekten in unterschiedlichen Behältern zugelassen werden.
+
+[source,xml,linenums]
+----
+MODEL SO_AFU_Abbaustellen_20200918 (de)
+AT "http://afu.so.ch"
+VERSION "2020-09-18"  =
+  IMPORTS GeometryCHLV95_V1;
+
+  TOPIC Abbaustellen =
+    OID AS INTERLIS.UUIDOID;
+
+    /** Abbaustelle (aus Fachanwendung ohne Geometrie)
+     */
+    CLASS Abbaustelle =
+      Nummer : MANDATORY TEXT*1024;
+      Name : MANDATORY TEXT*1024;
+      Bemerkungen : MTEXT*1024;
+    END Abbaustelle;
+
+    /** Geometrie zu einer Abbaustelle. Getrennte Erfassung (Fachanwendung - Desktop-GIS)
+     */
+    CLASS Geometrie =
+      Geometrie : MANDATORY GeometryCHLV95_V1.SurfaceWithOverlaps2mm;
+    END Geometrie;
+
+    /** Verknüpfung zwischen genau einer Abbaustelle und einer Geometrie. 
+     * 
+     * In welcher Tabellen wird der Fremdschlüssel in der Datenbank angelegt? In welcher Klasse wird die Beziehung im XTF eingebettet?
+     * 
+     * Falls bei beiden (Basis-)Rollen die maximale Kardinalität kleiner gleich 1 ist, wird bei der Ziel-Klasse der zweiten  Rolle eingebettet. (Kap. 3.3.9 (und 3.3.7)).
+     */
+    ASSOCIATION Abbaustelle_Geometrie =
+      Geometrie (EXTERNAL) -- {1} Geometrie;
+      Abbaustelle -- {1} Abbaustelle;
+    END Abbaustelle_Geometrie;
+
+  END Abbaustellen;
+
+END SO_AFU_Abbaustellen_20200918.
+----
+
+Die Fachanwendung schickt uns für die Integration in die GDI (zur Publikation im Web GIS Client) nur eine INTERLIS-Transferdatei mit Objekten der Klasse `Abbaustelle`:
+
+[source,xml,linenums]
+----
+<?xml version="1.0" encoding="UTF-8"?>
+<TRANSFER xmlns="http://www.interlis.ch/INTERLIS2.3">
+  <HEADERSECTION SENDER="ili2pg-4.4.2-7b1d50437cd6970a801b16d177c4e27151414569" VERSION="2.3">
+    <MODELS>
+      <MODEL NAME="CoordSys" VERSION="2015-11-24" URI="http://www.interlis.ch/models"/>
+      <MODEL NAME="Units" VERSION="2012-02-20" URI="http://www.interlis.ch/models"/>
+      <MODEL NAME="GeometryCHLV03_V1" VERSION="2017-12-04" URI="http://www.geo.admin.ch"/>
+      <MODEL NAME="GeometryCHLV95_V1" VERSION="2017-12-04" URI="http://www.geo.admin.ch"/>
+      <MODEL NAME="SO_AFU_Abbaustellen_20200918" VERSION="2020-09-18" URI="http://afu.so.ch"/>
+    </MODELS>
+  </HEADERSECTION>
+  <DATASECTION>
+    <SO_AFU_Abbaustellen_20200918.Abbaustellen BID="bX">
+      <SO_AFU_Abbaustellen_20200918.Abbaustellen.Abbaustelle TID="5c6be6dd-7111-42fd-9eae-bd46fefa3c93">
+        <Nummer>5432</Nummer>
+        <Name>Hellstätt</Name>
+        <Bemerkungen>Fubar</Bemerkungen>
+        <Geometrie REF="5e5bb99e-2f68-499e-aebe-d01f05b9ea88"/>
+      </SO_AFU_Abbaustellen_20200918.Abbaustellen.Abbaustelle>
+    </SO_AFU_Abbaustellen_20200918.Abbaustellen>
+  </DATASECTION>
+</TRANSFER>
+----
+
+Das Attribut `REF` im Element `Geometrie` enthält den fixen Identifikator der Geometrie. Der GIS-Teil sieht in INTERLIS so aus (siehe `TID`):
+
+[source,xml,linenums]
+----
+<?xml version="1.0" encoding="UTF-8"?>
+<TRANSFER xmlns="http://www.interlis.ch/INTERLIS2.3">
+  <HEADERSECTION SENDER="ili2pg-4.4.2-7b1d50437cd6970a801b16d177c4e27151414569" VERSION="2.3">
+    <MODELS>
+      <MODEL NAME="CoordSys" VERSION="2015-11-24" URI="http://www.interlis.ch/models"/>
+      <MODEL NAME="Units" VERSION="2012-02-20" URI="http://www.interlis.ch/models"/>
+      <MODEL NAME="GeometryCHLV03_V1" VERSION="2017-12-04" URI="http://www.geo.admin.ch"/>
+      <MODEL NAME="GeometryCHLV95_V1" VERSION="2017-12-04" URI="http://www.geo.admin.ch"/>
+      <MODEL NAME="SO_AFU_Abbaustellen_20200918" VERSION="2020-09-18" URI="http://afu.so.ch"/>
+    </MODELS>
+  </HEADERSECTION>
+  <DATASECTION>
+    <SO_AFU_Abbaustellen_20200918.Abbaustellen BID="b1">
+      <SO_AFU_Abbaustellen_20200918.Abbaustellen.Geometrie TID="5e5bb99e-2f68-499e-aebe-d01f05b9ea88">
+        <Geometrie>
+          <SURFACE>
+            <BOUNDARY>
+              <POLYLINE>
+                <COORD>
+                  <C1>2629140.305</C1>
+                  <C2>1245681.759</C2>
+                </COORD>
+                <COORD>
+                  <C1>2629143.746</C1>
+                  <C2>1245586.181</C2>
+                </COORD>
+                <COORD>
+                  <C1>2629227.280</C1>
+                  <C2>1245582.550</C2>
+                </COORD>
+                <COORD>
+                  <C1>2629240.470</C1>
+                  <C2>1245648.689</C2>
+                </COORD>
+                <COORD>
+                  <C1>2629196.696</C1>
+                  <C2>1245685.773</C2>
+                </COORD>
+                <COORD>
+                  <C1>2629140.305</C1>
+                  <C2>1245681.759</C2>
+                </COORD>
+              </POLYLINE>
+            </BOUNDARY>
+          </SURFACE>
+        </Geometrie>
+      </SO_AFU_Abbaustellen_20200918.Abbaustellen.Geometrie>
+    </SO_AFU_Abbaustellen_20200918.Abbaustellen>
+  </DATASECTION>
+</TRANSFER>
+----
+
+Liegen sowohl die Daten aus der Fachanwendung wie auch die Geometrien als INTERLIS-Transferdatei vor, kann https://github.com/claeis/ilivalidator[`ilivalidator`] die Daten prüfen:
+
+```
+java -jar ilivalidator-1.11.6.jar --allObjectsAccessible abbaustellen_geometrie.xtf abbaustellen_fachanwendung.xtf
+```
+
+Wobei es hier noch einen Bug gibt: https://github.com/claeis/ilivalidator/issues/276[https://github.com/claeis/ilivalidator/issues/276].
+
+Man muss aber die Geometrien gar nicht nach INTERLIS exportieren, um die Konsistenz zwischen Fachanwendungsdaten und Geometriedaten zu prüfen. Der Versuch eines Importes der Fachanwendungsdaten in die Datenbank reicht für den Fall von Sachobjekten, die ins Nirvana zeigen. In diesem Fall können die Daten gar nicht importiert werden, weil der Primary Key (zum Fremdschlüssel) fehlt (&laquo;dangling reference&raquo;).
+
+Wie überzeugt man aber die Firma, die kein GIS machen will, von INTERLIS? Gar nicht. Man sagt einfach, dass sie einfachstes XML herstellen müssen:
+
+**Variante 1: Jaxb**
+
+Eine Möglichkeit ist der Weg über das automatische Erzeugen von Java-Klassen aus dem XSD, welches aus dem INTERLIS-Datenmodell einmalig automatisch erstellt werden muss. Diese Java-Klassen muss ich dann nur noch mit Inhalt befüllen und kann sie nach XML (also XTF) serialisieren. Dieses Serialisieren übernimmt ebenfalls die Programmierbibliothek. D.h. ich muss mich nicht um XML-Formatierungen etc. kümmern, sondern nur um den Inhalt.
+
+Ein Abbaustellen-Element wird z.B. wie folgt erstellt:
+
+[source,java,linenums]
+----
+SOAFUAbbaustellen20200918AbbaustellenAbbaustelle abbaustelle = new SOAFUAbbaustellen20200918AbbaustellenAbbaustelle();
+abbaustelle.setTID(abbauObj.getTid());
+abbaustelle.setNummer(abbauObj.getNummer());
+abbaustelle.setName(abbauObj.getName());
+abbaustelle.setBemerkungen(abbauObj.getBemerkungen());
+----
+
+Ein komplettes Minimalbeispiel gibt es https://github.com/edigonzales/afu_abbaustellen_jaxb/blob/master/src/main/java/ch/so/agi/XtfWriter.java[hier].
+
+**Variante 2: Templating**
+
+Eine zweite Variante ist die Verwendung einer Templating-Engine. Templating klingt zuerst immer einfach und effizient, hat aber meines Erachtens den Nachteil wenn es um Fehlersuche geht und/oder wenn es komplizierter wird. In diesem Fall ist es natürlich sehr einfach. Ein wenig Groovy-Magie:
+
+[source,java,linenums]
+----
+import groovy.text.markup.MarkupTemplateEngine
+import groovy.text.markup.TemplateConfiguration
+
+class Abbaustelle {
+    String tid
+    String nummer
+    String name
+    String bemerkungen
+    String geomRef
+}
+
+def model = [abbaustellen: [new Abbaustelle(tid: "5c6be6dd-7111-42fd-9eae-bd46fefa3c93", nummer: "5432", name: "Hellstätt", bemerkungen: "Fubar", geomRef: "5e5bb99e-2f68-499e-aebe-d01f05b9ea88")]]
+
+def template = """
+xmlDeclaration()
+TRANSFER(xmlns: "http://www.interlis.ch/INTERLIS2.3") {
+    HEADERSECTION(SENDER: "some-groovy-fairy-dust", VERSION: "2.3") {
+        MODELS {
+            MODEL(NAME: "CoordSys", VERSION: "2015-11-24", URI: "http://www.interlis.ch/models")
+            MODEL(NAME: "GeometryCHLV03_V1", VERSION: "2017-12-04", URI: "http://www.geo.admin.ch")
+            MODEL(NAME: "GeometryCHLV95_V1", VERSION: "2017-12-04", URI: "http://www.geo.admin.ch")
+            MODEL(NAME: "SO_AFU_Abbaustellen_20200918", VERSION: "2020-09-18", URI: "http://afu.so.ch")
+        }
+    }
+    DATASECTION {
+        'SO_AFU_Abbaustellen_20200918.Abbaustellen'(BID: "bX") {
+            abbaustellen.each { abbauObj -> 
+                'SO_AFU_Abbaustellen_20200918.Abbaustellen.Abbaustelle'(TID: abbauObj.tid) {
+                    Nummer(abbauObj.nummer)
+                    Name(abbauObj.name)
+                    Bemerkung(abbauObj.bemerkungen)
+                    Geometrie(REF: abbauObj.geomRef)
+                }
+            }
+        }
+    }
+}
+"""
+TemplateConfiguration config = new TemplateConfiguration();         
+config.setAutoIndent(true)
+config.setAutoNewLine(true)
+def abbaustellenXml = new MarkupTemplateEngine(config).createTemplate(template).make(model)
+
+println abbaustellenXml
+----
+
+INTERLIS ohne INTERLIS für Fachanwendungen, die GIS machen müssen aber kein GIS machen können und kein GIS machen wollen.

@@ -1,0 +1,129 @@
+---
+= Datenflüsse mit Gradle #2 
+Stefan Ziegler
+2017-02-08
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: KGDI,GDI,Gradle,Groovy,Java,INTERLIS,Datenintegration,know your gdi
+:idprefix:
+---
+Der Beitrag dürfte auch den Namen &laquo;INTERLIS leicht gemacht #14&raquo; erhalten, da er sehr schön die Vorzüge einer http://blog.sogeo.services/blog/2017/01/02/kgdi-the-next-generation-3.html[model-driven GDI] mit INTERLIS zeigt. 
+
+Die Idee mit https://gradle.org/[Gradle] Datenflüsse zu orchestrieren resp. aus einzelnen immer wiederkehrenden Schritten verschiedene Jobs zusammenstöpseln, wurde in http://blog.sogeo.services/blog/2017/01/19/datenfluesse-mit-gradle-1.html[diesem Beitrag] erläutert. Eine Herausforderung, die auftritt, ist der Umgang mit Wiederholungen. Wenn es nun häufig darum gehen soll, Daten von A nach B zu kopieren und diese in eine Datenbank zu importieren, merkt man sofort, dass auf dem fremden Server ja nicht nur _eine_ Datei liegt, die es zu importieren gilt, sondern _viele_. Jetzt könnte man natürlich das build-File einfach mehrfach kopieren. Bei zwei Dateien geht das ja vielleicht noch, aber bei 109 Gemeinden mit je einem AV-Datensatz will man mit diesem Ansatz nie mehr was verändern. Oder die einzelnen Schritte sind so ausgelegt, dass sie nicht nur mit einer Datei umgehen können, sondern mit einer beliebigen Anzahl. Das ist wahrscheinlich komplizierter zu programmieren und ich finde es &laquo;schöner&raquo;, wenn die einzelnen _Steps_ möglichst atomar sind. Vor allem möchte ich aber die Ressource kennen, mit der ich mich während des Jobs beschäftigen muss. Was wenn z.B. auf dem FTP-Server eine unbekannte 10GB-Datei liegt und einfach alles vom FTP-Server herunterladen wird und versucht wird zu importieren? Uncool. Also muss was her, dass zwar tendenziell auf die einzelne Datei zielt aber es soll so etwas geben wie eine Forschleife für die Wiederverwendbarkeit von Jobs (mit anderen Parameter).
+
+Gradle kennt https://docs.gradle.org/current/userguide/multi_project_builds.html[Multiprojekte]. Es gibt ein Root-Projekt und https://docs.gradle.org/current/userguide/multi_project_builds.html#sec:subproject_configuration[Subprojekte]. Das Root-Projekt soll in unserem Fall dazu dienen die 1 bis n (identischen) Subprojekte zu konfigurieren und auszuführen.
+
+Für die Probe aufs Exempel will ich Daten, die in unserer model-driven GDI, erfasst werden täglich prüfen. Dazu muss ich die Daten aus der PostgreSQL-Datenbank nach INTERLIS mit http://www.eisenhutinformatik.ch/interlis/ili2pg/[`ili2pg`] exportieren und anschliessend mit https://github.com/claeis/ilivalidator[`ilivalidator`] auf ihre Modellkonformität prüfen. Genau genommen reicht der Export mit `ili2pg`, da die ilivalidator-Prüfbibliotheken bequemerweise bereits eingebaut sind. Trotz den praktischen QGIS-Editier-Widgets und -Formularen sind Fehler bei der Erfassung schnell passiert. Vor allem wenn der Benutzer Beziehungen manuell korrigiert und erfasst. Darum lohnt sich dieses tägliche Validieren. Insbesondere können so auch Geometriefehler gefunden werden.
+
+Zum Testen stehen zwei kleinere Modelle zur Verfügung: http://blog.sogeo.services/data/datenfluesse-mit-gradle-2/SO_Hoheitsgrenzen_20170203.ili[Hoheitsgrenzen] und die http://blog.sogeo.services/data/datenfluesse-mit-gradle-2/SO_AV_Nachfuehrungskreise_2016-11-26.ili[Nachführungskreise der amtlichen Vermessung].
+
+Die einzelnen Subprojekte müssen in Gradle in der Datei `settings.gradle` definiert werden:
+
+[source,groovy,linenums]
+----
+include ':av_hoheitsgrenzen'
+include ':av_nachfuehrungskreise'
+----
+
+Die Namen der Subprojekte sind frei wählbar. Weil aber diese Namen über ein Property im build-File ansprechbar sind, wählt man sinnigerweise etwas aus, das man im weiteren Verlauf noch verwenden kann. Diese Subprojekte befinden sich &laquo;eigentlich&raquo; in Unterordnern. Weil wir aber sowieso keinen Code in diesen Unterordnern resp. Subprojekten haben, müssen diese Ordner auch nicht existieren.
+
+Nun kommt das erste Mal die Magie zum Vorschein. Im Haupt-Build-File `build.gradle` können den Subprojekten Properties mitgegeben werden. Wir müssen ja z.B. wissen in welchem Datenbankschema die Daten liegen und welches INTERLIS-Datenmodell verwendet werden muss.
+
+[source,groovy,linenums]
+----
+project(':av_hoheitsgrenzen') {
+    ext.dbschema = "av_hoheitsgrenzen"
+    ext.ilimodels = "SO_Hoheitsgrenzen_20170203"
+}
+
+project(':av_nachfuehrungskreise') {
+    ext.dbschema = "av_nachfuehrungskreise"
+    ext.ilimodels = "SO_AV_Nachfuehrungskreise_20161126"
+}
+----
+
+Wo werden die Daten jetzt aber exportiert und geprüft? Gleich nachfolgend, hier:
+
+[source,groovy,linenums]
+----
+subprojects {
+    apply from: "${rootDir}/validation.gradle" 
+}
+----
+
+Das bedeutet, dass für jedes Subprojekt das Build-Skript `validation.gradle` ausgeführt wird. Und in genau diesem `validation.gradle` findet der eigentliche Validierungs-Job statt:
+
+[source,groovy,linenums]
+----
+import ch.so.agi.gdi.tasks.io.InterlisExportTask
+
+ext {
+    exportDir = "/opt/tmp/validation/"
+}
+
+task validateData(type: InterlisExportTask) {
+    host = db_host
+    port = db_port
+    database = db_database
+    usr = db_usr
+    pwd = db_pwd
+
+    schema = dbschema
+    models = ilimodels
+
+    xtfFileName = exportDir + project.name + ".xtf"
+    logfile = exportDir + project.name + ".log"
+}
+
+task cleanUp(type: Delete) {
+    outputs.upToDateWhen {false}
+
+    onlyIf {
+        validateData.state.failure == null
+    }
+
+    delete fileTree(dir: exportDir, include: "**/${project.name}.*")
+}
+
+validateData.finalizedBy('cleanUp')
+----
+
+Zuerst wird der selber geschriebene - auf `ili2pg` basierende - `InterlisExportTask` importiert. Anschliessend wird das Exportverzeichnis definiert. Der Task `validateData` ist vom Typ `InterlisExportTask` und prüft gleich während des Exportierens die Daten. Falls sie fehlerhaft sind, ist der Build nicht erfolgreich. Nach dem Validieren werden die exportierten Daten wieder gelöscht. Dies macht der `cleanUp`-Task vom Typ `Delete`. Dieser Typ ist bereits Bestandteil von Gradle und musste nicht selber geschrieben werden. Gelöscht werden die Daten aber nur, falls die Validierung erfolgreich war: `onlyIf` in Verbindung mit `validateData.state.failure == null`.
+
+Zu guter Letzt möchten wir mit einer E-Mail benachrichtigt werden, falls etwas schief lief. Dies können wir im Root-Build-File mit dem `buildFinished`-Hook erledigen. Das ist dann kein Task, denn wir aufrufen, sondern ein paar Zeilen selbst erklärendes http://www.groovy-lang.org/[Groovy] pur.
+
+[source,groovy,linenums]
+----
+import org.apache.commons.mail.DefaultAuthenticator
+import org.apache.commons.mail.Email
+import org.apache.commons.mail.SimpleEmail
+
+gradle.buildFinished { buildResult ->
+    println "\nBUILD FINISHED"
+
+    if (buildResult.failure) {
+        logger.error("build failure - " + buildResult.failure)
+    }
+
+    if (buildResult.failure) {
+        def message = buildResult.failure.getMessage()
+
+        Email email = new SimpleEmail()
+        email.setHostName(email_host)
+        email.setSmtpPort(Integer.parseInt(email_port))
+        email.setAuthenticator(new DefaultAuthenticator(email_login, email_password))
+        email.setSSLOnConnect(true)
+        email.setFrom(email_from)
+        email.setSubject(project.name)
+        email.setMsg(message)
+        email.addTo(email_receiver)
+        email.send()
+    }
+}
+----
+
+Will man einzelne Subprojekte ausführen, muss man den vollständigen Pfad (mit Doppelpunkt getrennt) zum Task angeben. In unserem Fall für die Hoheitsgrenzen:  `gradle :av_hoheitsgrenzen:validateData`. Oder aber wenn wir alle Subprojekte am Stück ausführen lassen wollen: `gradle validateData`. Falls jetzt das erste Subprojekt einen Fehler wirft, wird das zweite nicht mehr ausgeführt. Dieses Verhalten können wir mit der https://docs.gradle.org/current/userguide/tutorialgradlecommand_line.html#sec:continue_build_on_failure[Option] `--continue` ändern.
+
+Ein weiteres kleines Goodie ist die https://docs.gradle.org/current/userguide/tutorialgradlecommand_line.html#sec:profiling_build[Option] `--profile`. Das liefert eine nette HTML-Seite mit http://blog.sogeo.services/data/datenfluesse-mit-gradle-2/profile-01/profile-2017-02-08-20-55-10.html[Informationen zum Build]. 
+
+Interessanter ist so eine Auswertung aber für ein anderes Projekt: Von https://s.geo.admin.ch/714aaee117[map.geo.admin.ch] werden sämtliche 230 frei verfügbaren AV-Datensätze herunterladen und mit `ilivalidator` geprüft. Da gibt der http://blog.sogeo.services/data/datenfluesse-mit-gradle-2/profile-02/profile-2017-02-08-08-22-49.html[Report] schon ein bisschen mehr her. Mit der Performanz von ilivalidator darf man schon mal ganz zufrieden sein. 230 AV-Datensätze in 1:11h. Die grafische Aufbereitung der Resultate gibt es https://s.geo.admin.ch/713a84cb4a[hier], die natürlich täglich mittels cronjob und Gradle-Build-File nachgeführt werden.

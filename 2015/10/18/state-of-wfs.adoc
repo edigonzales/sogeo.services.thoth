@@ -1,0 +1,58 @@
+---
+= State of WFS
+Stefan Ziegler
+2015-10-18
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: WFS,QGIS,GeoServer
+:idprefix:
+---
+Oder wie soll man WFS &laquo;richtig&raquo; nutzen? Eines vorweg: ich weiss es nicht. Ein Direktzugriffsverfahren auf Daten mit Filterfunktionen ist toll und sinnvoll. Aber für mich stellen sich einige Fragen in zwei Themenfeldern:
+
+* Interaktion zwischen Benutzer und Service
+* Umgang mit grossen Datenmengen
+* Und irgendwie eine Kombination von beidem.
+
+Die ganze Thematik mit http://docs.geoserver.org/stable/en/user/data/app-schema/index.html[Anwendungsschemen] und http://lists.osgeo.org/pipermail/mapserver-dev/2014-June/014087.html[komplexen Feature] lassen wir mal beiseite und gehen von good old https://www.google.ch/url?sa=t&rct=j&q=&esrc=s&source=web&cd=1&cad=rja&uact=8&ved=0CCEQFjAAahUKEwi17pPNuMzIAhWLVxoKHUvAC0E&url=http%3A%2F%2Fportal.opengeospatial.org%2Ffiles%2F%3Fartifact_id%3D15201&usg=AFQjCNGwftPpYIra3XPRMDwfqb-BGETqyw&sig2=slYt5wNVI48Niy8Ri6TXnw[OGC SF-0] aus. Das heisst http://docs.geoserver.org/stable/en/user/data/app-schema/complex-features.html#simple-features[eine Tabelle aus der Datenbank wird zu einem WFS-Layer], der mit einem `GetFeature`-Request heruntergeladen werden kann. Solche WFS-Server gibt es wie Sand am Mehr (http://geoserver.org/[GeoServer], http://hub.qgis.org/projects/quantum-gis/wiki/qgis_server_tutorial[QGIS Server], http://mapserver.org/[MapServer/TinyOWS], http://www.deegree.org/[deegree]).
+
+Die Unterstützung in den Desktop-GIS wie z.B. http://www.qgis.org[QGIS] ist auf den ersten Blick nicht allzu übel. Unterstützt wird die Version 1.0.0. Das Einbinden von WFS-Layer ist einfach und ähnlich dem eines Postgis-Layers:
+
+video::hgPlv4tUDGE[youtube]
+
+Im Video wird gezeigt, wie die Hoheitsgrenzen des Kantons Solothurn in QGIS geladen werden. &laquo;In QGIS geladen&raquo; bedeutet, dass die Vektordaten komplett vom WFS-Server heruntergeladen werden und in QGIS in einem Memory-Layer gespeichert werden. Wird QGIS geschlossen, werden die Daten nirgends auf dem Computer gespeichert und beim Öffnen des QGIS-Projektes werden die Daten vom WFS-Server _erneut_ heruntergeladen.
+
+Soweit so gut. Die Hoheitsgrenzen werden zügig geladen. Es sind ja auch nur 110 Polygone. Auch das Nicht-Offline-Speichern und erneute Laden beim Öffnen des QGIS-Projektes hat was: So sind die Daten garantiert immer aktuell resp. entsprechen der Aktualität wie sie der Serviceprovider anbietet.
+
+Schauen wir uns die Bodenbedeckung der amtlichen Vermessung an. Das sind im Kanton Solothurn knapp 280'000 Polygone:
+
+video::Neerm1dweZo[youtube]
+
+Wird der WFS-Layer genau gleich geladen wie die Hoheitsgrenzen wartet der Benutzer 1.5 Minuten auf die Antwort. Das QGIS Fenster ist blockiert und auf dem Server läuft in diesem Zeitraum ein Prozess mit 100% CPU-Auslastung. Wird z.B. QGIS-Server verwendet, läuft neben der eigentlichen Verarbeitung des WFS-Request (als FCGI-Prozess) auch noch Apache mit 20% CPU-Auslastung. Speichert man das QGIS-Projekt und öffnet es wieder, wird dieser Request wiederholt. Der Benutzer wartet also bei jedem Öffnen des Projektes einige Minuten. Mir noch nicht klar warum das Abfragen von einzelnen Features (mit dem Identify Features Tool) so lange dauert. Eventuell wird beim Memory-Layer kein Spatial-Index erzeugt und daher wirkt die Feature-Abfrage so käsig.
+
+Mit den Filterfunktionen kann der Problematik der langen Downloadzeit entgegen gewirkt werden. Einerseits kann nach Sachattributen (z.B. Gemeindenummer) gefiltert werden:
+
+video::aAcTHfnoKlc[youtube]
+
+Man darf aber nicht vergessen, dass man ja nur nach Attributen filtern kann, die auch da sind. Fehlt im WFS-Layer das Attribute `bfsnr` kann **nicht** nach einer Gemeinde gefiltert werden.
+
+Anderseits kann man geografisch filtern:
+
+video::XbAWoqFtSVg[youtube]
+
+Auch das geht nicht immer: WFS-Layer ohne Geometrien können **nicht** geografisch gefiltert werden. An den Haaren herbeigezogen? Ich denke nicht. Denkbar sind Strassennamen oder ähnliches.
+
+QGIS hat beim Hinzufügen von WFS-Layer eine interessante Option, die sich &laquo;Cache Features&raquo; nennt. Leider funktioniert sie mit der aktuellen QGIS-Version (2.10) nicht mehr. Im GUI ist die Option noch vorhanden aber die Funktion wurde im https://github.com/qgis/QGIS/blob/master/src/providers/wfs/qgswfsprovider.cpp#L126[Quellcode bewusst auskommentiert]. Äh..? Irgendwie ist da sowieso der http://lists.osgeo.org/pipermail/qgis-developer/2015-October/039642.html[Wurm] drin. Die Idee hinter &laquo;Cache Features&raquo; ist eben das oben beschriebene Verhalten, dh. **alle** Features des WFS-Layer werden in QGIS &laquo;gecached&raquo;/heruntergeladen. Wählt man jetzt diese Option ab (in QGIS 1.8 funktioniert das noch), werden die Features nicht mehr in QGIS gecached, sondern es werden nur die Features heruntergeladen, die dem aktuellen Kartenausschnitt entsprechen. Der Funktion ist sogar ein Mindestmass an Intelligenz eingepflanzt. So werden die Features nicht erneut geladen, wenn der neue Kartenausschnitt (nach Zoomen) komplett innerhalb des vorangegangenen Kartenausschnittes ist. Auf den ersten Blick ist das genau das Verhalten, das man sich eigentlich wünscht. Die Probleme beginnen aber beim Herauszoomen und am Schluss lädt es bei jedem Verschieben der Karte sehr lange, sehr viele Features herunter:
+
+video::op7eWUm6wCI[youtube]
+
+Wie man aber auch sieht, funktioniert dieser _uncached_ WFS-Layer bei grossen Massstäben (und dementensprechend wenig Feature, die nachgeladen werden müssen) ziemlich gut. Bei genügend schneller Internetverbindung merkt man das Nachladen praktisch gar nicht.
+
+Nach all den Beispielen bleiben bei mir immer noch Fragen in den eingangs erwähnten Themenfeldern:
+
+Darf das Herunterladen der Daten länger dauern oder soll der Benutzer die gleiche _User Experience_ wie bei WMS haben? Bei kleinen Datenmengen scheint das ziemlich gut zu funktionieren. Bei grösseren überhaupt nicht mehr. Oder macht es eben nichts, wenn die Daten nicht mehr _instant_ erscheinen, sondern es etliche Sekunden oder Minuten geht bis man wieder weiterarbeiten kann? Darf es Ziel der ganzen Übung sein die Daten einmalig herunterzuladen und dann lokal physisch zu speichern (als Shapefile o.ä.)? Ganz quer ist dieser Gedanke nicht: GML ist ja kein Produktionsformat, sondern ein Datenaustauschformat. Aber dann verliert man die Vorteile eines Direktzugriffsverfahrens.
+
+Klar, es gibt http://www.opengeospatial.org/standards/filter[Filter]. Darf man aber erwarten, dass der Benutzer _immer_ vorgängig die richtigen Filter kennt und auch einstellt? Zudem kann nur nach etwas gefiltert werden, was auch in den Daten vorhanden ist (&laquo;Ich will Daten der Gemeinde XY, kann aber keine Gemeindenummer beim Filter auswählen.&laquo;). Einmal Filter nicht gesetzt und schon dauert ein Download sehr lange und generiert Last.
+
+Last: Die grossen WFS-Requests erzeugen eine hohe Last auf dem Server. Ich bin zwar keine Server-Admin-Guru aber ich glaube nicht, dass man von externen und unter Umständen unbekannten Leuten den Server unbewusst (Filter vergessen?) so einfach unter Volllast gesetzt bekommen will. Für GeoServer gibt es ein http://docs.geoserver.org/stable/en/user/extensions/controlflow/index.html[Control Flow Modul], das die OWS-Requests detailliert kontrollieren kann. Bei QGIS-Server (FCGI-Process) kann/man/will man das wahrscheinlich teilweise direkt in den FCGI-Einstellungen regeln. Häufig gibt es auch die Möglichkeit auf der Serverseite die maximale Anzahl der Features zu limitieren, die auf eine Anfrage eines Klienten zurückgeschickt werden. Bis zur WFS-Version 2.0.0 wurde diese Anzahl dem Klienten nicht bekannt gegeben. Der Klient wusste also nicht, ob er alle angeforderten Features bekommen hat oder ob der Server die maximale Anzahl der auszuliefernden Features bereits erreicht hat. In WFS 2.0.0 wird diese Anzahl als `CountDefault` im `GetCapabilities`-Dokument stehen. In Kombinination mit http://gis.stackexchange.com/questions/86755/how-to-use-paging-in-a-wfs-query[Paging] https://trac.osgeo.org/mapserver/ticket/2799[wären] so zumindest sehr grosse Downloads möglich mit der Sicherheit wirklich auch alle Features zu bekommen.
+
+Ist WFS also nur etwas für kleine Datenmengen? Oder aber hat jemand Antworten auf die Frage: Wie soll man WFS &laquo;richtig&raquo; nutzen?

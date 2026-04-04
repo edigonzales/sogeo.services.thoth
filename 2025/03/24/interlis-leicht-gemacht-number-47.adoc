@@ -1,0 +1,181 @@
+---
+= INTERLIS leicht gemacht #47 - INTERLIS, das bessere JSON-Schema?
+Stefan Ziegler
+2025-03-24
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,JSON,iox,Java,ilivalidator
+:idprefix:
+---
+Ich hätte ja gerne ein Ausrufezeichen im Titel verwendet. Nur so allgemeingültig ist die Aussage wohl nicht. Jedoch für uns könnte sie passen. Im https://blog.sogeo.services/blog/2025/02/09/interlis-leicht-gemacht-number-46.html[letzten Blogbeitrag] habe ich geschrieben, dass bei uns viel Konfiguration anfällt. Ein Teil wird (zukünftig) originär in JSON von Mitarbeitern erfasst. Die Konfiguration der vielen Microservices im Umfeld des Web GIS Clients ist ebenfalls JSON. Diese ist teilweise sehr umfangreich und wird in der Regel nicht mehr von Hand erstellt. Zu jeder dieser Microservice-Konfiguration gibt es ein JSON-Schema, das die Konfiguration definiert. Im Fall des https://github.com/qwc-services/qwc-elevation-service[&laquo;elevation&raquo;-Services] ist die Konfiguration maximal simpel:
+
+[source,json,linenums]
+----
+{
+  "$schema": "https://github.com/qwc-services/qwc-elevation-service/raw/master/schemas/qwc-elevation-service.json",
+  "service": "elevation",
+  "config": {
+    "elevation_dataset": "/data/geodata/ch.so.agi.lidar_2014.dtm/ch.so.agi.lidar_2014.dtm.tif"
+  }
+}
+----
+
+Der Service hat zwei Funktionen: eine liefert für eine Koordinate einen Höhenwert zurück, die zweite Funktion liefert Höhenwerte entlang eines Linestrings als Antwort.
+
+Das dazugehörige Schema ist schon um einiges umfangreicher:
+
+[source,json,linenums]
+----
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/qwc-services/qwc-elevation-service/master/schemas/qwc-elevation-service.json",
+  "title": "QWC Elevation Service",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "title": "JSON Schema",
+      "description": "Reference to JSON schema of this config",
+      "type": "string",
+      "format": "uri",
+      "default": "https://raw.githubusercontent.com/qwc-services/qwc-elevation-service/master/schemas/qwc-elevation-service.json"
+    },
+    "service": {
+      "title": "Service name",
+      "type": "string",
+      "const": "elevation"
+    },
+    "config": {
+      "title": "Config options",
+      "type": "object",
+      "properties": {
+        "elevation_dataset": {
+          "description": "Elevation dataset (file or URL). Example: https://data.sourcepole.com/srtm_1km_3857.tif",
+          "type": "string"
+        }
+      },
+      "required": [
+        "elevation_dataset"
+      ]
+    }
+  },
+  "required": [
+    "service",
+    "config"
+  ]
+}
+----
+
+Für JSON-Liebhaber mag das Kunst sein, für mich sieht es eher leicht chaotisch aus. Inhaltlich dürfte so ein Schema wohl viele Anforderungen abdecken. Man kann z.B. Konstanten oder Default-Werte definieren. Irgendwie noch schick. Oder auch URL verlangen. Wobei man anscheinend zwei Aussagen dazu braucht: Das URL-Attribut muss vom Typ &laquo;string&raquo; sein und gemäss einer &laquo;uri&raquo; formatiert sein. Scheint mir irgendwie umständlich. Was wäre aber, wenn wir das JSON-Schema als einfach lesbares INTERLIS-Modell definieren könnten?
+
+[source,json,linenums]
+----
+INTERLIS 2.4;
+
+MODEL Elevation (de) AT "mailto:edigonzales@localhost" VERSION "20250324" =
+    
+    TOPIC Elevation =
+    
+        STRUCTURE Config_ =
+            elevation_dataset : TEXT*100;
+        END Config_;
+
+        CLASS Configuration =
+            service : TEXT*100;
+            config : Config_;
+        END Configuration;
+    
+    END Elevation;
+    
+END Elevation.
+----
+
+Und ja, im Modell fehlen die Kommentare (&laquo;description&raquo;), die im JSON-Schema vorhanden sind. Ebenfalls können keine Default-Werte und Konstanten gesetzt werden. Für beide Fragestellungen könnten z.B. Constraints verwenden werden. Und die Sache mit Modell -> Topic -> Class macht es auf den ersten Blick auch ziemlich _verbose_. Und trotzdem: Auch wenn wir Kommentare und Constraints noch einpflegen würden, dünkt es mich klarer, aussagekräftiger und sauberer strukturiert. Schlichtweg eleganter. Aber dazu gibt es wahrscheinlich auch gegenteilige Meinungen. 
+
+Die zum INTERLIS-Modell passende JSON-Datei sieht wie folgt aus / muss wie folgt aussehen:
+
+[source,json,linenums]
+----
+[
+    {
+      "@type": "Elevation.Elevation.Configuration",
+      "@id": "o1",
+      "@bid": "bid1",
+      "@topic": "Elevation.Elevation",
+      "service": "elevation", 
+      "config": {
+        "@type": "Elevation.Elevation.Config_",
+        "elevation_dataset" : "/data/geodata/ch.so.agi.lidar_2014.dtm/ch.so.agi.lidar_2014.dtm.tif"
+      }
+    }
+]
+----
+
+&laquo;Boah, wird ja immer komplizierter und hässlicher!&raquo; hört man sie sagen. Aber das hat alles schon seine Richtigkeit und Notwendigkeit. Aber der Reihe nach:
+
+Bereits mit der ersten Version von https://gretl.app[GRETL] wollten wir neben INTERLIS-Dateien auch CSV- und Shapedateien validieren können. GeoPackage ist im Laufe der Zeit noch hinzugekommen. Zur Validierung von Shapedateien habe ich vor Jahren https://blog.sogeo.services/blog/2018/02/19/interlis-leicht-gemacht-number-18.html[was geschrieben]. Im Prinzip geht das fast für jedes beliebige Format: man muss &laquo;nur&raquo; einen https://github.com/claeis/iox-api/blob/master/src/ch/interlis/iox/IoxReader.java[IoxReader] https://github.com/claeis/iox-wkf/blob/master/src/main/java/ch/interlis/ioxwkf/shp/ShapeReader.java[implementieren]. Anschliessend muss man einen https://github.com/claeis/ilivalidator/blob/master/src/org/interlis2/validator/Validator.java[Validator] https://github.com/sogis/gretl/blob/main/gretl/src/main/java/ch/so/agi/gretl/tasks/impl/ShpValidatorImpl.java[erweitern] und schon hat man seinen Custom-Format-Validator mit der Mächtigkeit von INTERLIS und `ilivalidator`. 
+
+Vor einiger Zeit haben wir ebensolche https://github.com/claeis/iox-wkf/tree/master/src/main/java/ch/interlis/ioxwkf/json[JsonReader und GeoJsonReader] programmieren lassen. Jetzt ist die Zeit gekommen diese in Wert zu setzen und sie als Basis für einen JsonValidator zu verwenden. Der JsonValidator wird als https://github.com/sogis/gretl/blob/V3_1_ili2duckdb/gretl/src/main/java/ch/so/agi/gretl/tasks/JsonValidator.java[GRETL-Task] umgesetzt. Ein Standalone-Werkzeug wäre aber mit minimalen Aufwand auch möglich.
+
+Zurück zum hässlichen &laquo;INTERLIS-JSON&raquo;: Um möglichst viel von der Sprache INTERLIS verwenden zu können und Daten in JSON transportieren zu können, braucht es diese Metaattribute in der JSON-Datei. Man muss wissen welcher Basket geliefert wird, um welchen Klassentyp es sich beim konkreten Objekt handelt etc. pp. Für unseren momentanen Anwendungsfall/Spezialfall ist aber nur das Attribut `@type` notwendig. D.h. ich möchte die JSON-Datei nicht unnötig aufblasen. Das löse ich, indem ich fehlende Metaattribute vor der Validierung https://github.com/sogis/gretl/blob/V3_1_ili2duckdb/gretl/src/main/java/ch/so/agi/gretl/tasks/impl/JsonValidatorImpl.java#L70[hinzufüge]. Ebenso ein allfällig fehlendes Toplevel-Array. Den JsonReader lasse ich so sein, wie er ist. Unsere Konfigurationsdatei sieht abgespeckt so aus:
+
+[source,json,linenums]
+----
+{
+    "@type": "Elevation.Elevation.Configuration",
+    "service": "elevation", 
+    "config": {
+        "@type": "Elevation.Elevation.Config_",
+        "elevation_dataset" : "/data/geodata/ch.so.agi.lidar_2014.dtm/ch.so.agi.lidar_2014.dtm.tif"
+    }
+}
+----
+
+Eine Unschönheit besteht/bestand noch: Ein JSON-Array mit z.B. Strings konnte nicht modelliert werden resp. nur über den Umweg mit INTERLIS-Strukturen. Das ist natürlich sehr umständlich. Weil mit INTERLIS 2.4 auch `LIST` und `BAG` mit einfachen Datentypen möglich ist, musste der JsonReader angepasst werden. https://github.com/claeis/iox-wkf/pull/53[Pullrequest] ist gemacht.
+
+Der JsonReader unterstützt auch Geometrien im Format von WKT. Ich kann z.B. folgendes Modell schreiben:
+
+[source,json,linenums]
+----
+INTERLIS 2.4;
+
+MODEL Test2 (de) AT "mailto:edigonzales@localhost" VERSION "20250324" =
+
+    DOMAIN
+        Coord2 = COORD
+        2460000.000 .. 2870000.000,
+        1045000.000 .. 1310000.000,
+        ROTATION 2 -> 1;
+    
+    TOPIC Topic2 =
+    
+        CLASS ClassA =
+            attrText : TEXT*60;
+            attrArea : AREA WITH (STRAIGHTS, ARCS) VERTEX Coord2 WITHOUT OVERLAPS > 0.001;
+        END ClassA;
+    
+    END Topic2;
+    
+END Test2.
+----
+
+Der JsonValidator überprüft problemlos die Area-Bedingung für folgende JSON-Datei (und findet die Überlappung):
+
+[source,json,linenums]
+----
+[
+    {
+      "@type": "Test2.Topic2.ClassA",
+      "attrText" : "line0",
+      "attrArea" : "POLYGON ((2460000 1045000, 2460001 1045000, 2460001 1045001, 2460000 1045001, 2460000 1045000))"
+    },
+    {
+      "@type": "Test2.Topic2.ClassA",
+      "attrText" : "line1",
+      "attrArea" : "POLYGON ((2460000.5 1045000, 2460002 1045000, 2460002 1045001, 2460001 1045001, 2460000.5 1045000))"
+    }    
+]
+----
+
+Ist INTERLIS das bessere JSON-Schema? Für uns glaub schon. Wir müssen uns nicht in eine neue Spezifikation kämpfen und können auch weiterhin die gleichen Werkzeuge und die gleiche Sprache verwenden. Zudem die Werkzeuge und Sprache sehr mächtig sind. Ein weiterer interessanter Aspekt ist, dass die Formatfrage so mehr und mehr in den Hintergrund rückt, weil das Format abstrahiert wird.
+
+

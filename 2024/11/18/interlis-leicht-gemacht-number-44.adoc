@@ -1,0 +1,175 @@
+---
+= INTERLIS leicht gemacht #44 - ilishaper: shape your xtf
+Stefan Ziegler
+2024-11-18
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,ilishaper
+:idprefix:
+---
+It's finally here: https://downloads.interlis.ch/ilishaper/[`ilishaper` Version 1.0]. Kurze https://blog.sogeo.services/blog/2023/09/20/interlis-leicht-gemacht-number-38.html[Rekapitulation], wozu brauchen wir https://github.com/claeis/ilishaper[`ilishaper`]? Die meisten unserer Daten sind öffentlich und https://data.geo.so.ch[frei verfügbar]. Einige Themen beinhalten nicht-öffentliche Informationen. Das kann z.B. der Name einer Person sein oder ihre Telefonnummer. Diese Informationen sind nicht für die Öffentlichkeit bestimmt und nur für den internen Gebrauch resp. für berechtigte Personen gedacht. Im Kartendienst haben wird das applikatorisch gelöst: Wir veröffentlichen die Datenbanktabelle einfach zwei Mal. Einmal mit den geschützten Attributen für interne resp. angemeldete Benutzer und einmal ohne die geschützten Attribute für die Öffentlichkeit. Aber wir sind jedoch noch nicht in der Lage, den Datensatz als Datei zu veröffentlichen. Wir hatten zuerst einen Ansatz mit Vererbungen im INTERLIS-Modell verfolgt. Das erwies sich aber als zu https://blog.sogeo.services/blog/2023/09/20/interlis-leicht-gemacht-number-38.html[kompliziert]. Und hier kommt nun `ilishaper` ins Spiel. Die Idee ist folgende:
+
+Wir erstellen zuerst nur ein flaches Publikationsdatenmodell mit allen Attributen (also auch den nicht-öffentlichen). Dieses Modell verwenden wir, um die Datenbanktabellen zu erstellen, welche z.B. der Kartendienst verwendet. Die Daten werden bei einer Publikation des Themas in eine XTF-Datei exportiert. Was wir jetzt benötigen ist eine Software, die aus dem Basismodell ein Derivatmodell ohne die nicht-öffentlichen Attribute erzeugt und aus der XTF-Daten entsprechend eine zusätzliche XTF-Datei ohne die nicht-öffentlichen Attribute erstellt (gemäss Derivatmodell). Das Derivatmodell muss natürlich nur einmalig erstellt werden und kann in ein https://geo.so.ch/models[INTERLIS-Repository] eingecheckt werden.
+
+Schauen wir uns ein Beispiel an. Gegeben das folgende Datenmodell:
+
+[source,ini,linenums]
+----
+INTERLIS 2.3;
+
+MODEL SO_ALW_Bienenstandorte_restricted_20241113 (de)
+AT "https://alw.so.ch"
+VERSION "2024-11-13"  =
+  IMPORTS GeometryCHLV95_V1;
+
+  TOPIC Bienenstandorte =
+    OID AS INTERLIS.UUIDOID;
+
+    /** Bienenstandort
+     */
+    CLASS Bienenstandort =
+      /** Nummer
+       */
+      Nummer : MANDATORY TEXT*16;
+      /** Honigsorte
+       */
+      Honigsorte : (
+        Bluetenhonig,
+        Waldhonig
+      ); 
+      /** Standort
+       */
+      Standort : MANDATORY GeometryCHLV95_V1.Coord2;
+      /** Bemerkung
+       */
+      Bemerkung : TEXT*200;
+      /** Name des Imkers
+       */
+      Name : MANDATORY TEXT*255;
+      /** Telefonnummer
+       */
+      Telefonnummer : TEXT*20; 
+    END Bienenstandort;
+
+  END Bienenstandorte;
+
+END SO_ALW_Bienenstandorte_restricted_20241113.
+----
+
+Die letzten beiden Attribute `Name` und `Telefonnummer` sind nicht-öffentlich und dürfen im Derivatmodell nicht mehr vorkommen. Für die Konfiguration von `ilishaper` wird eine ini-Datei benötigt, die ziemlich selbsterklärend sein sollte:
+
+[source,ini,linenums]
+----
+[SO_ALW_Bienenstandorte_restricted_20241113]
+name=SO_ALW_Bienenstandorte_20241113
+issuer=https://alw.so.ch
+version=2024-11-13
+doc=Datenmodell für die Bienenstandorte mit öffentlichen Daten
+
+[SO_ALW_Bienenstandorte_restricted_20241113.Bienenstandorte.Bienenstandort.Name]
+ignore=true
+
+[SO_ALW_Bienenstandorte_restricted_20241113.Bienenstandorte.Bienenstandort.Telefonnummer]
+ignore=true
+----
+
+Mit dem folgenden Befehl kann man das Derivatmodell erstellen lassen:
+
+[source,bash,linenums]
+----
+java -jar ilishaper-1.0.1.jar --createModel --config bienenstandorte.ini --modeldir ".;https://models.geo.admin.ch" --out SO_ALW_Bienenstandorte_20241113.ili SO_ALW_Bienenstandorte_restricted_20241113.ili
+----
+
+Das Derivatmodell sieht aus wie gewünscht:
+
+[source,ini,linenums]
+----
+INTERLIS 2.3;
+
+/** Datenmodell für die Bienenstandorte mit öffentlichen Daten
+ */
+MODEL SO_ALW_Bienenstandorte_20241113 (de)
+  AT "https://alw.so.ch"
+  VERSION "2024-11-13"
+  =
+  IMPORTS GeometryCHLV95_V1;
+
+  TOPIC Bienenstandorte =
+
+    /** Bienenstandort
+     */
+    CLASS Bienenstandort =
+      /** Nummer
+       */
+      Nummer : MANDATORY TEXT*16;
+      /** Honigsorte
+       */
+      Honigsorte : (
+        Bluetenhonig,
+        Waldhonig
+      );
+      /** Standort
+       */
+      Standort : MANDATORY GeometryCHLV95_V1.Coord2;
+      /** Bemerkung
+       */
+      Bemerkung : TEXT*200;
+    END Bienenstandort;
+
+  END Bienenstandorte;
+
+END SO_ALW_Bienenstandorte_20241113.
+----
+
+Aber Achtung: Es sieht wahrscheinlich nur auf den ersten Blick so aus wie gewünscht. Es fehlt `OID AS INTERLIS.UUIDOID`. Warum das aber korrekt ist, steht https://github.com/claeis/ilishaper/issues/1[hier].
+
+Wenn wir das Derivatmodell haben, können wir in https://blog.sogeo.services/data/interlis-leicht-gemacht-number-44/bienenstandorte_restricted.xtf[meinem Testdatensatz] mit drei Bienenstandorten die nicht-öffentlichen Attribute gemäss Derivatmodell &laquo;abstreifen&raquo; und eine neue XTF-Datei erstellen lassen:
+
+[source,bash,linenums]
+----
+java -jar ilishaper-1.0.1.jar --deriveData --config bienenstandorte.ini --modeldir ".;https://models.geo.admin.ch" --out bienenstandorte.xtf bienenstandorte_restricted.xtf
+----
+
+Et voilà: Die https://blog.sogeo.services/data/interlis-leicht-gemacht-number-44/bienenstandorte.xtf[resultierende XTF-Datei] hat kein `Name`-Attribut und kein `Telefonnummer`-Attribut.
+
+Aber `ilishaper` kann noch mehr. Wir haben zusätzlich die Anforderung, dass wir neben Spalten (Attribute) auch Zeilen filtern können. Nehmen wir an, dass die Öffentlichkeit nur die Bienenstandorte, die Blütenhonig produzieren, kennen darf. Dazu müssen wir die ini-Datei erweitern:
+
+[source,ini,linenums]
+----
+[SO_ALW_Bienenstandorte_restricted_20241113]
+name=SO_ALW_Bienenstandorte_20241113
+issuer=https://alw.so.ch
+version=2024-11-13
+doc=Datenmodell für die Bienenstandorte mit öffentlichen Daten
+
+[SO_ALW_Bienenstandorte_restricted_20241113.Bienenstandorte.Bienenstandort.Name]
+ignore=true
+
+[SO_ALW_Bienenstandorte_restricted_20241113.Bienenstandorte.Bienenstandort.Telefonnummer]
+ignore=true
+
+[SO_ALW_Bienenstandorte_restricted_20241113.Bienenstandorte.Bienenstandort]
+filter="Honigsorte==#Bluetenhonig"
+----
+
+Die beiden letzten Zeilen sind dazugekommen. Erlaubt sind Expressions wie z.B. bei einem Mandatory-Constraint. Der Ausdruck muss jedoch pro Objekt auswertbar sein und darf also keine Rollen oder Referenzattribute enthalten. Das Derivatmodell müssen wir nicht mehr erstellen, da sich an diesem nichts ändert. Ein nochmaliger Aufruf für das Erstellen der XTF-Datei:
+
+[source,bash,linenums]
+----
+java -jar ilishaper-1.0.1.jar --deriveData --config bienenstandorte.ini --modeldir ".;https://models.geo.admin.ch" --out bienenstandorte_filter.xtf bienenstandorte_restricted.xtf
+----
+
+Der Konsolenoutput verrät uns bereits, dass nur noch zwei Objekte in der neuen XTF-Datei vorhanden sind:
+
+[source,bash,linenums]
+----
+Info: bienenstandorte_restricted.xtf: SO_ALW_Bienenstandorte_restricted_20241113.Bienenstandorte BID=SO_ALW_Bienenstandorte_restricted_20241113.Bienenstandorte
+Info:       3 objects in CLASS SO_ALW_Bienenstandorte_restricted_20241113.Bienenstandorte.Bienenstandort
+Info: bienenstandorte_filter.xtf: SO_ALW_Bienenstandorte_20241113.Bienenstandorte BID=1
+Info:       2 objects in CLASS SO_ALW_Bienenstandorte_20241113.Bienenstandorte.Bienenstandort
+Info: ...conversion done
+----
+
+Ein Blick in die https://blog.sogeo.services/data/interlis-leicht-gemacht-number-44/bienenstandorte_filter.xtf[neue XTF-Datei] bestätigt dies.
+
+Sämtliche Dateien zum Rumspielen stehen https://blog.sogeo.services/data/interlis-leicht-gemacht-number-44/bienenstandorte.zip[hier] zum Download bereit.

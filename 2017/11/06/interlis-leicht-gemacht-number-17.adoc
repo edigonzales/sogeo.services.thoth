@@ -1,0 +1,79 @@
+---
+= INTERLIS leicht gemacht #17: Polymorphes Schreiben
+Stefan Ziegler
+2017-11-06
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,ili2pg,Polymorphismus,MGDM,MGM
+:idprefix:
+---
+Für einige der Datensätze, die gemäss https://www.admin.ch/opc/de/classified-compilation/20050726/index.html[GeoIG] / https://www.admin.ch/opc/de/classified-compilation/20071088/index.html[GeoIV] als INTERLIS-Datensatz geliefert werden müssen, gibt es bereits in irgendeiner Struktur Daten in der kantonalen Geodateninfrastruktur. Dass gar keine Daten vorhanden sind, dürfte wohl eher die Ausnahme sein. In beiden Fällen dürfte die Umsetzung eine Themas aber die passende Gelegenheit sein, um sich Gedanken über die zukünftige Datenstruktur in der KGDI zu machen. 
+
+Wäre es nicht schön, wenn man das minimale Geodatenmodell nach seinen Wünschen erweitern könnte, dieses bei sich in der KGDI implementieren könnte und dann trotzdem automatisch das Bundes-MGDM exportieren und der http://www.geodienste.ch[Aggregationsinfrastruktur] liefern könnte? Ja. Und seit https://github.com/claeis/ili2db/commit/d5585aea95c99e9cc76e5888fbaf60c4a21bbbdb#diff-2e49d06dc97236450a7f7354b2f9ea60R153[kurzem] geht das mit http://www.eisenhutinformatik.ch/interlis/ili2pg/[ili2pg] (und Variationen).
+
+Nehmen wir mal an, dass wir nicht ein eigenes Datenmodell für die Nutzungplanung geschrieben hätten, sondern wir erweitern einfach das http://models.geo.admin.ch/ARE/Nutzungsplanung_V1_1.ili[Bundesmodell]: Wir möchten ein zusätzliches Attribut `Baumassenziffer` in der Klasse `Typ` und eine zusätzliche Klasse `Grundnutzung_Zonenflaeche_Pos`, um die Zonentypen anschreiben zu können (Wer will das heute noch?).
+
+[source,java,linenums]
+----
+INTERLIS 2.3;
+
+MODEL SO_ARP_Nutzungsplanung_20171106 (en)
+AT "http://www.agi.so.ch"
+VERSION "2017-11-06"  =
+  IMPORTS Nutzungsplanung_LV95_V1_1,GeometryCHLV95_V1;
+
+  TOPIC Geobasisdaten
+  EXTENDS Nutzungsplanung_LV95_V1_1.Geobasisdaten =
+
+    CLASS Grundnutzung_Zonenflaeche_Pos =
+      Ori : MANDATORY 0.0 .. 399.9;
+      HAli : MANDATORY INTERLIS.HALIGNMENT;
+      VAli : MANDATORY INTERLIS.VALIGNMENT;
+      Pos : MANDATORY GeometryCHLV95_V1.Coord2;
+    END Grundnutzung_Zonenflaeche_Pos;
+
+    CLASS Typ (EXTENDED) =
+      Baumassenziffer : 0.00 .. 9.00;
+    END Typ;
+
+    ASSOCIATION Grundnutzung_Grundnutzung_Pos =
+      Grundnutzung -<> {1} Nutzungsplanung_LV95_V1_1.Geobasisdaten.Grundnutzung_Zonenflaeche;
+      Grundnutzung_Pos -- {0..*} Grundnutzung_Zonenflaeche_Pos;
+    END Grundnutzung_Grundnutzung_Pos;
+
+  END Geobasisdaten;
+
+END SO_ARP_Nutzungsplanung_20171106.
+----
+
+Das Erstellen der leeren Tabellen in der Datenbank geht wie bis anhin:
+
+[source,java,linenums]
+----
+java -jar ili2pg.jar --dbhost geodb-dev.eu-central-1.rds.amazonaws.com --dbdatabase xanadu2 --dbusr YYYYYY --dbpwd XXXXXX --nameByTopic --disableValidation --defaultSrsCode 2056 --expandMultilingual --strokeArcs --createGeomIdx --createFkIdx --createEnumTabs --beautifyEnumDispName  --modeldir "http://models.geo.admin.ch;." --models "Nutzungsplanung_Hauptnutzung_V1_1;SO_ARP_Nutzungsplanung_20171106" --dbschema npl_polymorph --schemaimport
+----
+
+Anschliessend importiere ich noch die Hauptnutzungen:
+
+[source,java,linenums]
+----
+java -jar ili2pg.jar --dbhost geodb-dev.eu-central-1.rds.amazonaws.com --dbdatabase xanadu2 --dbusr YYYYYY --dbpwd XXXXXX --nameByTopic --disableValidation --defaultSrsCode 2056 --expandMultilingual --strokeArcs --createGeomIdx --createFkIdx --createEnumTabs --beautifyEnumDispName  --modeldir "http://models.geo.admin.ch;." --models Nutzungsplanung_Hauptnutzung_V1_1 --dbschema npl_polymorph --import Hauptnutzung_CH_V1_1.xml
+----
+
+Aufgrund der Vererbung erhält die Tabelle `geobasisdaten_typ` in der Datenbank das zusätzliche Attribut `t_type`. Das Attribut enthält den konkreten Klassennamen resp. den SQL-Namen des qualifizierten INTERLIS-Klassennamens. Zu finden in der Tabelle `t_ili2db_classname`. Wenn ich jetzt in der Datenbank einen Record erfasse, der zur meiner erweiterten Typ-Klasse gehört, muss ich `so_rp_n0171106geobasisdaten_typ` reinschreiben. Ich kann nun munter darauflos digitalisieren oder wie in meinem Fall von meinem richtigen kantonalen Nutzungsplanungsmodell in das Fantasiemodell Daten mittels SQL rüberschaufeln.
+
+Die Magie und das Besondere beginnt erst beim Export. Wenn ich die Daten in meinem erweiterten kantonalen Modell exportieren will, reicht immer noch:
+
+[source,java,linenums]
+----
+java -jar ili2pg.jar --dbhost geodb-dev.eu-central-1.rds.amazonaws.com --dbdatabase xanadu2 --dbusr XXXXXX --dbpwd YYYYYY --nameByTopic --disableValidation --defaultSrsCode 2056 --expandMultilingual --strokeArcs --createGeomIdx --createFkIdx --createEnumTabs --beautifyEnumDispName  --modeldir "http://models.geo.admin.ch;." --models SO_ARP_Nutzungsplanung_20171106 --dbschema npl_polymorph --export npl_so.xtf
+----
+
+Will ich nun direkt das Bundesmodell exportieren, muss ich `ili2pg` die neue Option `--exportModels` mitgeben:
+
+[source,java,linenums]
+----
+java -jar ili2pg.jar --dbhost geodb-dev.eu-central-1.rds.amazonaws.com --dbdatabase xanadu2 --dbusr XXXXXX --dbpwd YYYYYY --nameByTopic --disableValidation --defaultSrsCode 2056 --expandMultilingual --strokeArcs --createGeomIdx --createFkIdx --createEnumTabs --beautifyEnumDispName  --modeldir "http://models.geo.admin.ch;." --models SO_ARP_Nutzungsplanung_20171106 --exportModels Nutzungsplanung_LV95_V1_1 --dbschema npl_polymorph --export npl_ch.xtf
+----
+
+Mit `--exportModels Nutzungsplanung_LV95_V1_1` wird die Transformation in das Basismodell gesteuert. Mit `--models SO_ARP_Nutzungsplanung_20171106` wird der Dateninhalt des Exportes definiert. In meinem konkreten Fall bedeutet das, dass beim Export in das Bundesmodell (= Basismodell) die zusätzliche Klasse und das zusätzliche Attribut verloren gehen.

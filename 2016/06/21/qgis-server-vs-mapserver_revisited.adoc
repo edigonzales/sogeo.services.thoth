@@ -1,0 +1,29 @@
+---
+= QGIS Server vs. MapServer - Revisited
+Stefan Ziegler
+2016-06-21
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: QGIS,QGIS-Server,WMS,Benchmark,MapServer
+:idprefix:
+---
+Auf vielfachen Wunsch hier noch die Resultate mit MapServer als FCGI. AVWMS und Orthofoto (&laquo;nearest neighbour&raquo;) sind dann schon eine andere Hausnummer. Jedoch zeigt sich dann bei den maximalen Antwortzeiten ein ähnliches Verhalten wie bei QGIS Server. Der FCGI-Experte würde wahrscheinlich (?) sagen: &laquo;Logisch!&raquo;.
+
+*AVWMS:*
+
+image::avwms_req_per_sec.png[alt="AVWMS requests per second", align="center"]
+
+image::avwms_max_resp_time.png[alt="AVWMS max response", align="center"]
+
+*Orthofoto (&laquo;nearest neighbour&raquo;):*
+
+image::ortho_req_per_sec.png[alt="Orthofoto (nearest neighour) requests per second", align="center"]
+
+image::ortho_max_resp_time.png[alt="Orthofoto (nearest neighour) max response", align="center"]
+
+*Orthofoto (&laquo;average&raquo;):*
+
+image::ortho_resampling_req_per_sec.png[alt="Orthofoto (average) requests per second", align="center"]
+
+image::ortho_resampling_max_resp_time.png[alt="Orthofoto (average) max response", align="center"]
+

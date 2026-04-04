@@ -1,0 +1,127 @@
+---
+= KGDI - The next generation #6: Datenvalidierung mit INTERLIS
+Stefan Ziegler
+2017-10-22
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: KGDI,GDI,INTERLIS,ilivalidator,Gradle,GRETL,ili2pg
+:idprefix:
+---
+Unser Projekt mit http://gradle.org[Gradle] http://blog.sogeo.services/blog/2017/01/19/datenfluesse-mit-gradle-1.html[Datenflüsse] http://blog.sogeo.services/blog/2017/02/08/datenfluesse-mit-gradle-2.html[durchzuführen], schreitet prächtig voran. Vieles bekommen wir mit Gradle geschenkt, ein paar geo-spezifische Tasks programmieren wir selber resp. lassen wir programmieren. Diese sogenannten Custom Tasks lassen sich in einem Plugin bündeln: https://github.com/sogis/gretl[GRETL]. 
+
+Seit circa 1.5 Jahren (versuchen) wir die http://blog.sogeo.services/blog/2017/01/02/kgdi-the-next-generation-3.html[_model-driven GDI_] zu leben. Das bedeutet für die Datenerfassung, dass wir INTERLIS-Modelle schreiben und diese mit https://github.com/claeis/ili2db[`ili2pg`] in der Datenbank abbilden. Der Benutzer verwendet anschliessend http://www.qgis.org[QGIS] für die Erfassung/Manipulation der Daten. Nun, wo Menschen arbeiten, passieren Fehler. So möchte man sicherstellen, dass die erfassten Daten in der Datenbank dem Modell entsprechen. Ili2pg bildet heute bereits wichtige Constraints in der Datenbank ab, z.B. Länge von Texten, Ranges von numerischen Attributen, Fremdschlüssel etc. Somit hilft uns bei der Datenerfassung die Datenbank, weil fehlerhafte Daten schon gar nicht gespeichert werden können. Meines Erachtens die Achillesferse im Ganzen QGIS-PostgreSQL-Zusammenspiel sind die Geometrien. Da ist es anscheinend schnell möglich Fehler zu speichern. Auch ohne die &laquo;Geometrie-Schwäche&raquo; bin ich der Meinung, dass eine unabhängige Datenprüfung gut tut. Und weil wir ja INTERLIS verwenden, kann uns das bei der Datenprüfung helfen.
+
+Die Idee ist so einfach wie genial: Wir exportieren die erfassten Daten einfach mit `ili2pg` und weil `ili2pg` die Validierungsbibliothek https://github.com/claeis/ilivalidator[`ilivalidator`] eingebaut hat, wird beim Export auch gleich die Modellkonformatität geprüft. Das exportierte XTF interessiert uns gar nicht, sondern eben nur das Validierungsresultat. Und weil für zukünftig nicht für jede Aufgabe ein Skript von Null an schreiben wollen, können wir für diesen Anwendungsfall Gradle resp. GRETL einsetzen. GRETL hat bereits einige https://github.com/sogis/gretl/tree/master/src/main/java/ch/so/agi/gretl/tasks[INTERLIS-spezifische] Custom Tasks implementiert, so wie den https://github.com/sogis/gretl/blob/master/src/main/java/ch/so/agi/gretl/tasks/Ili2pgExport.java[Ili2pgExport-Task].
+
+Die daraus resultierende `build.gradle`-Datei kann so aussehen:
+
+[source,java,linenums]
+----
+import java.nio.file.Paths
+import ch.so.agi.gretl.tasks.*
+import ch.so.agi.gretl.steps.*
+
+buildscript {
+    repositories {
+        mavenCentral()
+        jcenter()
+        maven { url 'http://sogeo.services:8081/artifactory/libs-snapshot' }  
+        maven { url 'http://jars.interlis.ch' }   
+    }
+    dependencies {
+        classpath 'ch.so.agi:gretl:1.0.+'
+        classpath 'de.undercouch:gradle-download-task:3.3.0'
+    }
+}
+
+apply plugin: 'ch.so.agi.gretl'
+
+ext {
+    sourceDbUrl = "jdbc:postgresql://geodb-t.verw.rootso.org:5432/sogis"
+    sourceDbUser = System.env.sourceDbUser
+    sourceDbPass = System.env.sourceDbPass    
+
+    outputDir = rootProject.projectDir
+
+    todaysDate = new Date().format('yyyy-MM-dd')
+    models = []
+    models.add(["SO_Agglomerationsprogramme_20170512", "arp_aggloprogramme", "arp_aggloprogramme_" + todaysDate ])
+    models.add(["SO_ARP_Nutzungsvereinbarung_20170512", "arp_nutzungsvereinbarung", "arp_nutzungsvereinbarung_" + todaysDate ])
+    models.add(["SO_Forstreviere_20170512", "awjf_forstreviere", "awjf_forstreviere_" + todaysDate ])
+    models.add(["SO_Hoheitsgrenzen_20170623", "agi_hoheitsgrenzen", "agi_hoheitsgrenzen_" + todaysDate ])
+    models.add(["SO_AWJF_Wegsanierungen_20170629", "awjf_wegsanierungen", "awjf_wegsanierungen_" + todaysDate ])
+}
+
+// Create a dynamic task for every model we 
+// want to validate and for cleaning up if
+// validaton was successful.
+models.each { model ->
+    def modelName = model.getAt(0)
+    def dbSchema = model.getAt(1)
+    
+    task "checkModel_$modelName"(type: Ili2pgExport) {
+        description = "INTERLIS validation against database schema: $dbSchema ($modelName)"
+        database = [sourceDbUrl, sourceDbUser, sourceDbPass]
+        dbschema = dbSchema
+        models = modelName
+        disableValidation = false
+        logFile = file(Paths.get(outputDir.toString(), dbSchema+".log"))
+        dataFile = file(Paths.get(outputDir.toString(), dbSchema+".xtf"))
+
+        finalizedBy "removeFiles_$modelName"
+    }
+
+    task "removeFiles_$modelName"(type: Delete) {
+        description = "Remove files from model export: $modelName"
+
+        onlyIf {
+            project.getTasksByName("checkModel_$modelName", false).getAt(0).state.failure == null
+        }
+
+        delete file(Paths.get(outputDir.toString(), dbSchema+".log")), file(Paths.get(outputDir.toString(), dbSchema+".xtf")) 
+    }
+}
+
+// This is kinda dummy task. The magic is the 'dependsOn' logic.
+task checkAllModels() {
+    description = "Validate all models."
+}
+
+checkAllModels.dependsOn {
+    tasks.findAll { task -> task.name.startsWith('checkModel_') }
+}
+----
+
+In der Liste `models` sind die benötigten Informationen zu den INTERLIS-Modellen, die in der Datenbank abgebildet sind, gespeichert. Also Modellname, Schemaname und für den Export die Basis der Dateinamen von Logfile und XTF-Transferdatei.
+
+Gradles Magie startet in Zeile 39: Anstatt für jedes zu prüfende Modell einen Task zu definieren, werden sogenannte dynamische Tasks definiert indem einfach über die `models`-Liste interiert wird. Dabei werden pro Modell zwei Tasks erstellt. Einen Export-Task und einen Lösch-Task für die erstellten Dateien (Log- und Transferfile), wobei nur gelöscht wird, falls der Export erfolgreich war (`onlyIf`). Gab es Fehler, will man wahrscheinlich wissen, was das Problem ist, darum werden die Dateien nicht gelöscht.
+
+Mit `gradle tasks --all` erscheinen alle Tasks in der Konsole:
+
+[source,xml,linenums]
+----
+Other tasks
+-----------
+checkAllModels - Validate all models.
+checkModel_SO_Agglomerationsprogramme_20170512 - INTERLIS validation against database schema: arp_aggloprogramme (SO_Agglomerationsprogramme_20170512)
+checkModel_SO_ARP_Nutzungsvereinbarung_20170512 - INTERLIS validation against database schema: arp_nutzungsvereinbarung (SO_ARP_Nutzungsvereinbarung_20170512)
+checkModel_SO_AWJF_Wegsanierungen_20170629 - INTERLIS validation against database schema: awjf_wegsanierungen (SO_AWJF_Wegsanierungen_20170629)
+checkModel_SO_Forstreviere_20170512 - INTERLIS validation against database schema: awjf_forstreviere (SO_Forstreviere_20170512)
+checkModel_SO_Hoheitsgrenzen_20170623 - INTERLIS validation against database schema: agi_hoheitsgrenzen (SO_Hoheitsgrenzen_20170623)
+removeFiles_SO_Agglomerationsprogramme_20170512 - Remove files from model export: SO_Agglomerationsprogramme_20170512
+removeFiles_SO_ARP_Nutzungsvereinbarung_20170512 - Remove files from model export: SO_ARP_Nutzungsvereinbarung_20170512
+removeFiles_SO_AWJF_Wegsanierungen_20170629 - Remove files from model export: SO_AWJF_Wegsanierungen_20170629
+removeFiles_SO_Forstreviere_20170512 - Remove files from model export: SO_Forstreviere_20170512
+removeFiles_SO_Hoheitsgrenzen_20170623 - Remove files from model export: SO_Hoheitsgrenzen_20170623
+----
+
+Jeder Task kann einzeln aufgerufen werden, wobei aufgrund der `finalizedBy`-Bedingung (Zeile 52) die `removeFiles`-Tasks jeweils automatisch nach den `checkModel`-Tasks ausgeführt werden. 
+
+Wenn wir alle Modelle prüfen wollen, müssen wir nicht jeden Task auflisten, sondern es gibt einen `checkAllModels`-Task, der alle Modell prüft. Der einzige Sinn dieses Tasks ist, dass er abhängig von allen Tasks, die mit `checkModel_` beginnen, ist. Somit müssen sämtlicher dieser Tasks ausgeführt werden, bevor der `checkAllModels`-Task ausgeführt wird (der aber nichts macht). 
+
+Normalerweise bricht Gradle den Prozess ab, falls in einem einzelnen Task Fehler auftreten. Der `Ili2pgExport`-Task ist genau so designt, dass er eine Exception wirft, wenn beim Export (resp. bei der Validierung während des Exports) ein Fehler auftritt. Das heisst, wir müssen dafür sorgen, dass der Gradle-Prozess nach einem Auftreten eines Fehler nicht abbricht, sondern weiterläuft. Dies erreicht man mit der `--continue`
+Option:
+
+`gradle checkAllModells --continue`
+
+Das Gute daran ist, dass der Gradle Build zwar durchläuft aber trotzdem am Ende den Status &laquo;failed&raquo; erhält. Dieser Validierungs-Job wird wie unsere anderen Datenflüsse in Zukunft mit https://jenkins.io/[Jenkins] orchestriert werden. Damit können auf einfachste Weise E-Mails beim Auftreten von Fehler verschickt werden oder der Prozess kann ins kantonale https://www.nagios.org/[_Nagios_] eingebunden werden. Auch bei der Wahl des Orchestrierungstool gilt &laquo;Spatial Is Not Special&raquo;.

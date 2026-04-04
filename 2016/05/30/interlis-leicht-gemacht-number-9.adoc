@@ -1,0 +1,160 @@
+---
+= Interlis leicht gemacht #9
+Stefan Ziegler
+2016-05-30
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,Checker,ilivalidator
+:idprefix:
+---
+Wie oft haben wir uns bereits einen Open-Source-INTERLIS-Checker gewünscht? Jahre darüber diskutiert wie es doch schön wäre einen mehr oder weniger plattformunabhängigen Checker zu haben, der auch noch frei verfügbar ist. Reichen würde uns zuerst auch ein https://en.wikipedia.org/wiki/No_frills[&laquo;no-frills&raquo;] Checker. Also keine Mega-Super-Zusatzfunktionen, sondern in erster Priorität die Prüfung einer INTERLIS-Transferdatei (.xtf / .itf) gegenüber dem INTERLIS-Modell (.ili).
+
+Solche Prüfungen werden bei http://www.agi.so.ch[uns] vermehrt eingesetzt und sind für die Qualitätsprüfung schlicht unverzichtbar. Eingesetzt werden solche Prüfungen z.B. bei:
+
+* den wöchenlichen Datenlieferungen der amtlichen Vermessung der Nachführungsgeometer an den Kanton.
+* den AVGBS-Lieferungen der Nachführungsgeometer an das Grundbuch.
+* der Erfassung der Nutzungsplanung durch die Planungs- und Ingenieurbüros. 
+
+Neben der Plattformunabhängigkeit und freien Verfügbarkeit wünschten wir auch Folgendes:
+
+* Einbindung als Programmbibliothek soll möglich sein.
+* Export der gefundenen Fehler in eine INTERLIS-Error-Datei und Log-Datei.
+* Einfaches GUI
+* lokalisierbar (im Sinne einer Mehrsprachigkeit)
+* Erweiterbar um zusätzliche, eigene Tests / Bedingungen
+
+Mit den Grundanforderungen (Programmbibliothek, plattformunabhängig, Open Source) ist auch die Trennung zwischen (Weiter-)Entwicklung der eigentlichen Prüfsoftware und eines Check-Services einfach möglich. Mit der rosaroten Brille sehe ich z.B. bereits eine moderne M2M-Schnittstelle und eine saubere Benutzerverwaltung.
+
+Die pure Prüfung einer Transferdatei auf der Kommandozeile wäre circa so:
+
+[source,xml,linenums]
+----
+java -jar ilichecker.jar --errXtf error.xtf --models SO_Nutzungsplanung_2016-02-03 2601_nplso.xtf
+----
+
+Wie wenig es braucht, um einen kleinen Web-Service auf die Beine zu stellen, habe ich bereits http://blog.sogeo.services/blog/2016/02/11/interlis-leicht-gemacht-number-7.html[hier] gezeigt. Ändern würde sich für den Checker nicht viel: einzig ein paar Zeilen Code und eine andere Klasse verwenden.
+
+Soviel zum Wunschkonzert. Manchmal geht es dann aber schneller als gedacht und was lange währt wird hoffentlich auch gut. Mit http://www.eisenhutinformatik.ch/interlis/ili2pg/[`ili2pg`] und http://www.eisenhutinformatik.ch/interlis/ili2gpkg/[`ili2gpkg`] haben der http://geo.gl.ch[Kanton Glarus] und der http://www.agi.so.ch[Kanton Solothurn] in den letzten Jahren INTERLIS-Werkzeuge weiterentwickeln lassen, die sich hervorragend für den Formatumbau von/nach INTERLIS eignen (Stichwort &laquo;generisches Schnittstellenwerkzeug&raquo;). Diesen Schwung wollten wir mitnehmen und im Bereich der Datenprüfung etwas auf die Beine stellen. Dazu haben wir ein Konzept mit Spezifikation einer möglichen Prüfsoftware geschrieben. 
+
+Die Spezifikation kann am Besten mit einem Beispiel-Modell illustriert werden (resp. das Beispiel-Modell ist die Spezifikation):
+
+[source,xml,linenums]
+----
+INTERLIS 2.3;
+
+CONTRACTED MODEL Beispiel1
+  AT "mailto:ceis@localhost"
+  VERSION "2016-03-29" =
+
+  DOMAIN
+    LKoord = COORD 2480000.00 .. 2850000.00, 1060000.00 .. 1320000.00,
+      ROTATION 2 -> 1;
+      
+
+  TOPIC Bodenbedeckung =
+
+    CLASS GebaeudeArt =
+      Art : MANDATORY TEXT*6; !! R2.1, R2.2
+    END GebaeudeArt;
+
+    CLASS BoFlaechen =
+      Art : MANDATORY ( !! R2.1, R2.2
+        Gebaeude,
+        befestigt,
+        humusiert,
+        Gewaesser,
+        bestockt,
+        vegetationslos);
+      Form : MANDATORY AREA WITH (STRAIGHTS, ARCS) VERTEX LKoord
+        WITHOUT OVERLAPS > 0.10; !! R2.1, R2.2
+    END BoFlaechen;
+
+    FUNCTION checkGebaeudeVersicherungsSystem(str : TEXT):BOOLEAN;
+    
+    CLASS Gebaeude =
+      Art : MANDATORY (
+        Wohn,
+        Industrie,
+        andere); !! R2.1, R2.2
+      AndereArt : TEXT*6; !! R2.1, R2.2
+      AssNr : MANDATORY TEXT*6; !! R2.1, R2.2
+      UNIQUE AssNr;                                    !! R2.3
+      EXISTENCE CONSTRAINT AndereArt REQUIRED IN GebaeudeArt:Art;    !! R2.4
+      MANDATORY CONSTRAINT Art!=#andere OR DEFINED(AndereArt);       !! R2.5
+      MANDATORY CONSTRAINT INTERLIS.len(AssNr)>=4;     !! R2.6
+      MANDATORY CONSTRAINT checkGebaeudeVersicherungsSystem(AssNr);  !! R2.7
+    END Gebaeude;
+
+    ASSOCIATION GebaeudeFlaeche =
+      Gebaeude -- {0..*} Gebaeude;                     !! R2.8, R2.9
+      Flaeche -- {1} BoFlaechen;
+    END GebaeudeFlaeche;
+    
+    VIEW IndustrieGebaeude                             !! R2.10
+    	PROJECTION OF Gebaeude;
+    	WHERE Gebaeude->Art==#Industrie;
+    =
+      ALL OF Gebaeude;
+      MANDATORY CONSTRAINT INTERLIS.len(AssNr)==6;
+    END IndustrieGebaeude;
+    
+  END Bodenbedeckung;
+
+END Beispiel1.
+----
+
+*R1.1 / API*: Es stehen JAVA-Klassen und -Methoden zur Verfügung, welche die Prüfung der einzelnen INTERLIS-Objekte ermlicht.
+
+*R1.2 / error.xtf*: Das Prüfresultat wird in eine `error.xtf`-Datei geschrieben. Die Datei entspricht einem durch den Checker fixen, definierten INTERLIS-Modell.
+
+*R1.3 /Kommandozeile*: Es steht auf der Kommandozeile ein Standalone-Programm zur Verfügung: `java -jar ilichecker.jar ...`
+
+*R1.4 / GUI*: Einfaches GUI mit allen Möglichkeiten, die die Kommandozeile bietet (aber ohne Editor für Konfigurationsdateien).
+
+*R1.5 / Warnings per Checks*: Einzelne Checks (Attributekardinalität R2.1) lassen sich ausschalten und erscheinen dann als Warnings oder gar nicht im `error.xtf`.
+
+*R1.6 / Warnings per Constraints*: Einzelne Constraints lassen sich ausschalten und erscheinen dann als Warnings oder gar nicht im `error.xtf`.
+
+*R1.7 / eigene Fehlermeldungen*: Es lassen sich spezifische Fehlermeldungen zu einzelnen Constraints definieren.
+
+*R1.8 / Zusätzliche Constraints*: Zu einem bestehenden Modell lassen sich zusätzliche Constraints definieren (ausserhalb des Modells; via einfache VIEWs oder eigene Syntax; wird während der Realisierung definiert).
+
+*R1.9 / GUI und Fehlermeldungen lokalisierbar*: Die Fehlermeldungen und das GUI sind lokallisierbar.
+
+*R1.10 / Daten lesen via IoxReader*: Der Checker soll zum Lesen der Daten ausschliesslich das Interface _IoxReader_ benutzen, so dass andere Formate einfach ergänzt werden können.
+
+*R1.11 /ILIGML, XTF, ITF*: Der Checker soll die aktuellen INTERLIS-Formate ITF, XTF und ILIGML unterstützen.
+
+*R2.1 / Kardinalitaet von Attributen*:
+Die Kardinalität von Attributen (`MANDATORY`, `OPTIONAL`, `{0..*}` bei `BAG/LIST`) wird geprüft. 
+
+*R2.2 / Datentyp von Attributen*:
+Der Datentyp von Attributen wird geprüft (z.B. `0.0 .. 10.0`) aber ohne die Zielklasse bei Referenzattributen (Teil von R2.8)
+
+*R2.3 / UniquenessConstraint*:
+Eindeutigkeitsbedingung gemäss INTERLIS-Referenzhandbuch werden geprüft
+
+*R2.4 / ExistenceConstraint*:
+Existenzbedingung gemäss INTERLIS-Referenzhandbuch werden geprüft
+
+*R2.5 / MandatoryConstraint, PlausibilityConstraint und SetContraint (ohne Funktionen)*:
+inkl. `DEFINED`, `AND`, `OR`, `NOT`, `()`, aber ohne Funktionen gemäss Modell INTERLIS (Anhang A des Referenzhandbuches)
+
+*R2.6 / Constraint mit Funktionen gemäss Anhang des INTERLIS Referenzhandbuchs*:
+Funktionen gemäss Modell INTERLIS (Anhang A des Referenzhandbuches) werden geprüft
+
+*R2.7 / Constraint mit eigenen Funktionen*:
+Eigene INTERLIS-Funktionen können via einen einfachen Plugin-Mechanismus (die Funktion selbst muss in JAVA implementiert sein und kann via Checker-API auf die Daten zugreifen) hinzugefügt werden
+
+*R2.8 / Zielklasse in ASSOCATION und in Referenzattributen*:
+Es wird geprüft, ob das Zielobjekt existiert, und ob die Klasse des Objekts der Zielklasse gemäss Rolle oder Referenzattribut entspricht.
+
+*R2.9 / Kardinalität in ASSOCIATION*:
+Es wird geprüft, ob die Anzahl der in Beziehung stehenden Objekte den Rollendefinitionen entsprechen.
+
+*R2.10 / VIEWs*:
+Als Basis für komplexe Constraints lassen sich VIEWs definieren. Diese werden durch den Checker auch ausgewertet.
+
+Und nun zum wirklich guten Teil: Aufgrund einer glücklichen Fügung ist die Finanzierung des grössten Teils gesichert. Neben den Kantonen Glarus und Solothurn wird ein signifikanter Teil der Entwicklungskosten durch ein privates Ingenieurbüro übernommen. Einzig der ILIGML-Reader und R2.10 (VIEWs) können zum jetzigen Zeitpunkt noch nicht realisiert werden. Wer noch etwas beisteuern will, ist also gerne willkommen (auch in Zukunft). Ende Jahr sollte eine erste Version vollständig (bis auf ILIGML und VIEWs) vorhanden sein. Im September ist ein Zwischenrelease mit abgespecktem Funktionsumfang vorgesehen. 
+
+Ich denke, dass der Open-Source-INTERLIS-Checker viele Anwender finden und begeistern wird. Schon allein aufgrund des sehr interessanten Ansatzes wie eigene Tests / Prüfungen umgesetzt werden können (Plugin-Mechanismus und VIEWs) sowie der einfachen Einsetzbarkeit der Prüfsoftware (JAVA-Klasse).

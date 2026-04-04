@@ -1,0 +1,43 @@
+import ch.ehi.basics.settings.Settings
+import org.interlis2.validator.Validator
+import ch.ehi.basics.logging.EhiLogger
+
+buildscript {
+    repositories {
+        mavenCentral()
+        maven {
+            url "http://www.catais.org/maven/repository/release/"
+        }
+    }
+    dependencies {
+        classpath group: 'org.interlis2', name: 'ilivalidator', version: '0.9.0'
+    }
+}
+
+// Copy file
+task copyFile(type: Copy) {
+    from("/Users/stefan/Projekte/agi-data-integrator/data/ch_254900.itf")
+    into("/opt/tmp/")
+}
+
+// Validate INTERLIS file
+task validate(type: IlivalidatorTask, dependsOn: 'copyFile') {
+    fileName = "/opt/tmp/ch_254900.itf"
+}
+
+// Custom Task
+class IlivalidatorTask extends DefaultTask {
+    @Input String fileName
+
+    Boolean success
+
+    @TaskAction
+    def validate() {
+        def settings = new ch.ehi.basics.settings.Settings()
+        settings.setValue(Validator.SETTING_ILIDIRS, Validator.SETTING_DEFAULT_ILIDIRS)
+        success = Validator.runValidation(fileName, settings)
+        if (!success) {
+            throw new GradleException("INTERLIS validation failed.")
+        }
+    }
+}

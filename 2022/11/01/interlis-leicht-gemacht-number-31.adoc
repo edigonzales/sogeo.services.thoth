@@ -1,0 +1,38 @@
+---
+= INTERLIS leicht gemacht #32 - The State of INTERLIS native
+Stefan Ziegler
+2022-11-01
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: Interlis,GraalVM,Java
+:idprefix:
+---
+Der Titel ist (zu) bedeutungsschwanger und schlaumeierisch. Es geht weniger um INTERLIS selbst, sondern ob die Lieblingswerkzeuge eines jeden Geoinformatikers (https://github.com/claeis/ili2db[`ili2db`], https://github.com/claeis/ilivalidator[`ilivalidator`] und https://github.com/claeis/ili2c[`ili2c`]) zu einem Native Image kompilierbar sind und diese sinnvoll zu gebrauchen sind. Ein Native Image ist ahead-of-time kompilierter Java-Code. Dieses Native Image benötigt keine Java Virtuelle Maschine mehr. Dafür muss es für jedes Betriebssystem eigens kompiliert werden. Ich fand die Idee ziemlich cool, als ich das erste Mal davon hörte. Meine Einstiegsdroge war ein https://chrisseaton.com/truffleruby/tenthings/[Blogbeitrag] von Chris Seaton. Damals wohl Mitarbeiter bei Oracle Labs. Ein Native Image kann man nicht mit dem normalen JDK herstellen, sondern man benötigt (noch) https://graalvm.org[GraalVM]. Ein Teil der GraalVM wird wieder zurück in das OpenJDK-Projekt fliessen, wo es https://openjdk.org/jeps/295[glaub ursprünglich sogar herkam]. Im Kern also bereits eine alte Idee.
+
+Warum möchte man überhaupt Java-Anwendungen zu einem Native Image kompilieren? Solche Native Images sind kleiner (im Vergleich zu einer JVM plus Anwendungscode) und starten extrem schnell, was sie spannend macht für Cloud Deployments. Sie benötigen zudem weniger RAM und CPU. Aber all das ist nicht allgemeingültig und Nachteile gibt es auch. Wie erwähnt muss man für jedes Betriebssystem ein separates Native Image kompilieren. Das Kompilieren dauert relativ lange und im Gegensatz zum Just-in-Time-Compiler finden zur Laufzeit keine Optimierungen statt. 
+
+Im Fall der INTERLIS-Werkzeuge kann man sich schon vorstellen, dass ein Native Image ein paar Vorteile bringt:
+
+- Zugang zur Anwendung vereinfachen: Für viele Anwender ist das Installieren der Java-Anwendung eine Herausforderung. Man muss die Zip-Datei herunterladen und entpacken und dann - wenn man das GUI verwenden will - müssen die Einstellungen auf dem Computer korrekt sein, damit ein Doppelklick die Anwendung startet. Zudem muss eine JVM vorhanden sein, die ebenfalls installiert werden will. Hier könnte es eventuell schon helfen, wenn alles in ein einzelnes ausführbares Binary verpackt wird.
+- Einbinden in andere (Nicht-Java-)Systeme: https://opengisch.github.io/QgisModelBaker/[QGIS Model Baker] verwendet `ili2db` für das ganze INTERLIS-Handling. Model Baker ist ein QGIS-Plugin, geschrieben in Python. Das Python-Plugin hat somit als Abhängigkeit eine JVM und die Java-Anwendung selber. Die Kommunikation zwischen dem Plugin und `ili2db` geschieht mittels Systemcalls. Stünde `ili2db` als Native Image zur Verfügung, fällt die Java-Abhängigkeit weg. Champions League wäre wenn man alles direkt ins Plugin bringen könnte, was nicht ganz undenkbar ist, da man mit GraalVM auch Shared Libraries herstellen kann. Wie das funktionieren könnte, kann man http://blog.sogeo.services/blog/2021/02/02/interlis-leicht-gemacht-number-22.html[hier] nachlesen.
+
+Anfang 2019 habe ich http://blog.sogeo.services/blog/2019/02/23/graalvm-p1-interlis-polyglot-gemacht.html[erste Gehversuche mit `ilivalidator`] und Native Image gemacht. Damals war das noch ziemlich knorzig. Wie sieht es heute aus?
+
+Als erstes habe ich mir https://github.com/edigonzales/ili2c-native[`ili2c`] vorgenommen. Der Swing/AWT-Support von GraalVM ist noch https://github.com/oracle/graal/issues/4921[verbesserungsfähig]. Weil Liberica NIK (abgleitet von GraalVM) meint, sie hätten besseren Swing/AWT-Support, habe ich dieses zum Kompilieren verwendet. Mit dem Tracing Agent muss man aber auf jedem Betriebssystem wegen der GUI-Komponenten gewisse Konfigurationsdateien herstellen, was auch nicht spassig ist mit einem MacBook Air M1. https://mac.getutm.app/[UTM] sei dank. Man kann sogar Windows ARM (Insider Preview) installieren. Nur leider gibt es dafür Liberica NIK nicht. Darum musste für Windows noch ein älteres Intel MacBook herhalten, was wiederum ein käsiges Erlebnis war. Das Resultat war semi-erfolgreich. Auf Ubuntu funktioniert das GUI tadellos. Auf macOS funktioniert es auch, nur darf man das Fenster nicht verkleinern oder vergrössern. Dann schmiert es ab. Auf Windows habe ich es nicht getestet. Ansonsten ist das Kompilieren zum Native Image problemlos gegangen. Und der INTERLIS-Compiler funktioniert als Native Image auf der Konsole tadellos.
+
+Als nächstes kam https://github.com/edigonzales/ili2pg-native[`ili2pg`] dran. Da wollte ich das GUI schon a priori nicht unterstützen und wollte auch in der Github Action Pipeline direkt GraalVM verwenden, was massiv einfacher ist, als Liberica NIK: Für GraalVM gibt es eine Action, bei Liberica muss man alles händisch, selber machen. Leider kann man es nicht mit GraalVM kompilieren, da im Quellcode bereits eine Swing-Klasse verwendet wird. Interessanterweise (wenn ich es richtig verstanden habe) ist es ein GUI, das mir mitteilt, dass `ili2pg` kein GUI unterstützt? Nun denn, back to Liberica NIK. Erlebnis und Ergebnis wie bei `ili2c`.
+
+Als letztes habe ich mir https://github.com/edigonzales/ilivalidator-native[`ilivalidator`] angeschaut. Hier wusste ich, dass es extra Native-Image-fähig gemacht wurde und das https://github.com/claeis/ilivalidator/blob/f8187fe468b2ce6ea9b1be7f1d9aa7817997ae94/src/org/interlis2/validator/Main.java#L45[GUI speziell behandelt wird]. Also nur GraalVM verwendet, kompiliert und fertig. Einfach und schnell (also relativ schnell kompiliert). Funktioniert einwandfrei.
+
+Die Native Images für jedes der Werkzeuge gibt es im jeweiligen &laquo;Native&raquo;-Github-Repo unter Releases:
+
+- https://github.com/edigonzales/ili2c-native/releases
+- https://github.com/edigonzales/ili2pg-native/releases
+- https://github.com/edigonzales/ilivalidator-native/releases
+
+Von meinen ersten Experimenten mit GraalVM wusste ich, dass `ilivalidator` signifikant langsamer ist im Vergleich zur Java-Variante. Ob das nun in den fast vier Jahren anders geworden ist? https://github.com/claeis/ilivalidator/issues/364[Nein]. Die Fruchtfolgeflächen des Kantons Solothurn dauern circa 8 Minuten mit der Java-Variante und 16 Minuten mit dem Native Image. Warum ist mir nicht klar. Beide Varianten verwendeten den Serial GC. Die Native Images sind nicht super geeignet für &laquo;long running and high throughput&raquo;-Prozesse. Vielleicht ist die Validierung von grösseren XTF ein solcher?
+
+Wie weiter? Ich fände es gut, wenn es die INTERLIS-Werkzeuge als Native Images gibt. Dabei lassen sich vielleicht zwei Fliegen mit einer Klappe schlagen. Die Swing-GUI würde ich entfernen und sie mit JavaFX (bessere Native Image Unterstützung) machen. Eventuell sogar in einem anderen Repo. 
+
+Der Performance-Einbruch von `ilivalidator` sollte genauer untersucht werden, damit man Klarheit hat, ob das der momentane Stand der möglichen Native-Image-Performance ist oder mit Code-Änderungen im `ilivalidator` etwas verbessert werden kann.
+

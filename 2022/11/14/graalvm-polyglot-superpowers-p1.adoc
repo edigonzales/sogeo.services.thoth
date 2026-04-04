@@ -1,0 +1,58 @@
+---
+= GraalVM Polyglot Superpowers #1 - SpatioTemporal Asset Catalogs (Stac)
+Stefan Ziegler
+2022-11-14
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: GraalVM,Java,Python,GraalPython,Stac
+:idprefix:
+---
+https://stacspec.org/[SpatioTemporal Asset Catalogs] sind der neue heisse Scheiss in der (Cloud-Native-)Geowelt:
+
+&laquo;At its core, the SpatioTemporal Asset Catalog (STAC) specification provides a common structure for describing and cataloging spatiotemporal assets.&raquo;
+
+Umgangssprachlich heisst das: JSON-Dateien mit Links auf Datensätze mit bisschen Metainformation und der Möglichkeit verschiedene Zeitstände anzubieten. Eigentlich gibt es das dank https://inspire.ec.europa.eu/documents/Network_Services/Technical_Guidance_Download_Services_v3.1.pdf[INSPIRE] bereits auf Basis von Atomfeed und OpenSearch (mit einer Helvetisierung in https://ech.ch/de/ech/ech-0056/3.0-0[eCH-0056]). So richtig durchgesetzt hat sich das nicht, was schade ist, da man damals bereits darauf geachtet hat das Rad nicht mehr neu zu erfinden, sondern vorhandene Nicht-GIS-Technologien zu verwenden. Die Helvetisierung war ein Totalflop, was man sich im Nachhinein leider eingestehen muss.
+
+Die Stac-Spezifikation besteht aus vier &laquo;semi-unabhängigen&raquo; Spezifikationen, was zeitweilig ein wenig verwirrend sein kann. Die Chose ist aber auf https://github.com/radiantearth/stac-spec[Github] relativ gut beschrieben. Nur manchmal wünschte ich mir ein INTERLIS-Modell zwecks besserer Lesbarkeit. Etwas was mich eben verwirrt, sind Ankündigungen, dass ein Release Candidate einer Stac-Spez veröffentlicht wurde. Hä, warum, die ist noch schon fertig? Nein, es gibt vier davon. Die ersten drei beschreiben meines Erachtes nur statische Dinge (Item, Catalog und Collection), also im Prinzip die JSON-Schemen. Die Vierte im Bunde, die Stac API Spezifikation, spezifiert eine Rest-API. Um diese geht es hier nicht, sondern um die Herstellung der statischen Dateien und das Bereitstellen dieser.
+
+Wir verwalten sämtliche Informationen zu einem Datenthema in einer Metadatenbank. Aus diesen Informationen erzeugen wir unterschiedliche Konfigurationsdateien, um die verschiedenen Dienste zu bedienen, die dann zur Laufzeit nicht auf die Metadatenbank zugreifen müssen, sondern nur auf diese Konfigurationsdatei. Einer dieser Dienste ist die sogenannten Datensuche, sprich unsere zukünftige Datenabgabe. Für diese stellen wir eine XML-Datei aus der Metadatenbank her mit den benötigten Informationen aller zum Download stehenden Geodaten. Die Datensuche-Anwendung liest beim Start diese XML-Datei, erstellt einen Suchindex und füllt das GUI ab. Auf dieser Basis könnte man auch gleich den Stac-Catalog erzeugen: XML-Datei als Input und die Stac-JSON-Dateien als Output via Webserver bereitstellen. Für das Herstellen von Stac-Catalogen dünkt mich vor allem die Python-Bibliothek https://stacspec.org/en/about/tools-resources/[_pystac_] tauglich. Das würde aber bedeuten, dass ich eine komplette Anwendung mit Python machen müsste. https://www.graalvm.org/[GraalVM] to the rescue.
+
+GraalVM bietet unter anderem eine https://www.graalvm.org/python/[Python-Implementierung] an. Das Spannende für mich ist, dass man polyglot programmieren kann. D.h. man kann zwischen Java und Python Objekte austauschen:
+
+[source,python,linenums]
+----
+class StacCreator:
+    def create(self, collection_file_path, theme_publication, files_server_url, root_url):
+        collection_id = theme_publication.getIdentifier()
+        ...
+----
+
+Der Python-Methode `create` wird eine `theme_publication` übergeben. Dies ist ein POJO, das aus dem Parsen der XML-Datei in Java erzeugt wurde. In der Python-Methode kann ich zum Beispiel auf die Getter-Methode `getIdentifier()` zugreifen, welche mir den Identifier der Themenbereitstellung liefert usw.
+
+Mein Ziel ist es also möglichst wenig Python schreiben zu müssen. Nur gerade das, was notwendig ist, um die Stac-Kataloge zu erzeugen. Kein Parsen der XML-Dateien, keinen Webserver hochfahren etc. Müsste ich alles lernen und habe ich bereits in meiner Spring Boot Anwendung vorliegen. 
+
+Als Grundlage diente mir Tim Felgentreffs ausgezeichneter Blogbeitrag https://medium.com/graalvm/supercharge-your-java-apps-with-python-ec5d30634d18[&laquo;Supercharge Your Java Apps with Python&raquo;]. Interessanter als das Geschriebene zu wiederholen, ist zu erwähnen, was mir nicht gelungen ist resp. nur über Umwege.
+
+Zuerst wollte ich die Anwendung zu einem Native Image kompilieren, damit man GraalVM nicht installieren muss. Das geht mit Spring Boot leider https://github.com/oracle/graal/issues/4473[noch nicht]. Weil die Anwendung, wenn überhaupt, im Regelfall in einem Dockercontainer laufen würde, ist das nicht das Ende der Welt. Die grössere Herausforderung ist/war der Umgang mit dem `venv`-Ordner. GraalVM erstellt diesen und speichert die notwendigen Python-Bibliotheken in dieser virtuellen Umgebung. Wie paketiert man das in der Java-Welt? Am elegantesten wäre natürlich, wenn wir den `venv`-Ordner als normale Ressource behandeln können und in die Spring Boot Fat-Jar packen könnten. Die Enttäuschung kommt beim Starten der Anwendung: Es findet die PyStac-Bibliothek nicht. Grund dafür ist, dass das unterliegende Truffle-Filesystem kein Jar-Filesystem implementiert, sondern &laquo;nur&raquo; das normale Filesystem. Wenn die Anwendung nur in einem Docker-Container laufen würde, könnte man den `venv`-Ordner beim Builden des Images reinkopieren. Das finde ich einschränkend. Ich mag immer noch den Gedanken, dass eine Java-Awendung, jetzt halt eine polyglote Java-Anwendung, mit `java -jar sodata-stac.jar` gestartet werden kann. Ich habe mich dazu entschlossen den `venv`-Ordner zu zippen und die Zip-Datei in die Jar-Datei zu kopieren. Diese Zip-Datei wird beim Hochfahren der Anwendung aus den Ressourcen kopiert und entpackt. Vielleicht kann man das eleganter lösen. Mir ist aber nichts besseres in den Sinn gekommen.
+
+Ein ein weiteres Problem ist die Kompatibilität der Python-Bibliotheken. Diese ist nicht immer garantiert und man ist in diesem Fall aufgeschmissen. Bei mir lief aber alles rund mit PyStac.
+
+Ist polyglotes Programmieren sinnvoll? It depends. Ich sehe schon Vorteile (auch wenn jetzt gleich die Microservice-Marktschreier ums Eck kommen werden): Ich bin froh, wenn ich in der Java-Welt, wo ich einiges kenne (Build-Tools, IDE, Frameworks, Paketierung ...), verbleiben kann und nur das absolut nötigste auslagern muss. Und welche GIS-Abteilung hat tatsächlich die notwendige Grösse und hat verschiedene Teams, die an verschiedenen Microservices arbeiten?
+
+Es funktioniert übrigens auch umgekehrt, d.h. mittels Graalpython auf Java-Klassen zugreifen. Das habe ich in einem älteren Blogbeitrag am Beispiel `ili2gpkg` http://blog.sogeo.services/blog/2021/02/02/interlis-leicht-gemacht-number-22.html[gezeigt].
+
+Nachfolgend Links zum Code und zu interessanten Webseiten, die mir weitergeholfen haben. Wer es ausprobieren will:
+
+```
+docker run -p 8080:8080 -v ~/tmp:/stac sogis/sodata-stac-jvm
+```
+
+Im lokalen _~/tmp_-Ordner liegen die Stac-Dateien. Die Links auf die Assets funktionieren nicht, da es sich um Fantasie-Daten handelt.
+
+Links:
+
+- https://github.com/edigonzales/sodata-stac
+- https://medium.com/graalvm/supercharge-your-java-apps-with-python-ec5d30634d18
+- https://technology.amis.nl/languages/create-a-native-image-binary-executable-for-a-polyglot-java-application-using-graalvm/
+- https://blogs.oracle.com/javamagazine/post/java-graalvm-polyglot-python-r
+- https://www.graalvm.org/22.3/reference-manual/embed-languages/

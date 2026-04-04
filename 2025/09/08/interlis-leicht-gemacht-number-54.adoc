@@ -1,0 +1,46 @@
+---
+= INTERLIS leicht gemacht #54 - INTERLIS meets Vibe Coding
+Stefan Ziegler
+2025-09-08
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,LLM,KI,ChatGPT,Lucene,Spring Boot
+:idprefix:
+---
+https://de.wikipedia.org/wiki/Vibe_Coding[&laquo;Vibe Coding&raquo;] ist wahrscheinlich eher ein Gaga-Begriff und vor allem eine nicht sonderlich schlaue Arbeitsweise aber ich brauchte einen catchy Blogtitel. Ich habe im Juli unseren https://geo.so.ch/modelfinder[Modelfinder] ein wenig aufgefrischt. Ich konnte das Frontend technisch massiv vereinfachen: simples Templating mit https://htmx.org/[HTMX] im Gegensatz zu https://www.gwtproject.org/[GWT] und und ich habe die Anwendung auch funktional erweitert. Neu gibt es eine Detailansicht für das INTERLIS-Datenmodell. Diese zeigt neben verschiedenen Metainformationen auch das Modell mit Syntax Highlighting und ein UML-Klassendiagramm: 
+
+image::modelfinder02.png[alt="modelfinder 01", align="center"]
+
+Die Klassendiagramme werden mit https://mermaid.js.org/[Mermaid] erstellt. Ganz glücklich war ich jedoch mit meiner Umsetzung noch nicht: Gewisse Modelle konnten nicht gerendert werden (looking at you https://www.geo.admin.ch/dam/de/sd-web/528vKWlohxZJ/Empfehlungen%20Kataloge.pdf[&laquo;Kataloge&raquo;]) und umfangreichere Modelle wurden zu klein gerendert und entsprechend hat man nichts mehr erkannt. Der Code zur Herstellung des Mermaid-UML-Klassendiagramms habe ich selber geschrieben. Weil mir wegen eines anderen Projektes auffiel, dass ChatGPT 5 ein relativ gutes Wissen über das https://github.com/claeis/ili2c/tree/master/ili2c-core/src/main/java/ch/interlis/ili2c/metamodel[INTERLIS-Java-Metamodell] verfügt, versuchte ich mit einem möglichst akkuraten Prompt mir Code für die UML-Herstellung generieren zu lassen:
+
+[source,markdown,linenums]
+----
+I want to create a mermaidjs class diagram with Java. The input is a INTERLIS TransferDescription which you know kinda well. It is defined in the official INTERLIS compiler: https://github.com/claeis/ili2c and https://github.com/claeis/ili2c/blob/master/ili2c-core/src/main/java/ch/interlis/ili2c/metamodel/TransferDescription.java
+
+What should be supported:
+
+- For rendering: consider only models from last file (method TransferDescription.getModelsFromLastFile())
+- Classes with attributes and cardinality. Please render attributes like "Geometrie[1] : MultiSurface". Classes can be "Abstract". Use a stereotype for this.
+- Structures are like Classes. But with a stereotype "Structure".
+- Topics: Use namespaces for this and put the viewables in it.
+- Classes can also be outside of a topic. Then place it on the root level (like the topic).
+- Enumeration: Use "Enumeration" stereotype for this. Do not list the enumeration values.
+- Show inheritance. If the base class is not in a model from the last file, render the base class on the root of the diagram and add a "External" stereotype to it.
+- Show associations with cardinality on both sides.
+
+Think before you start coding. Especially about a clean architecture and use a pattern if there is one the fits this task.
+----
+
+Vielleicht hat es die eine oder andere Peinlichkeit drin aber ich war positiv vom Resultat überrascht. Nach etwas mehr als 1.5 Minuten kam eine recht brauchbare Variante heraus. Interessanterweise erfindet ChatGPT nicht zum ersten Mal eine Methode `getElements()` für die Klasse `ch.interlis.ili2c.metamodel.Container`. Und im vorliegenden Fall verwechselte ChatGPT die Klasse `ModelElement` mit `Element`. Wahrscheinlich könnte man beides noch in den Prompt einbauen und gut ist. Ebenso hat ChatGPT sich bei der einfachen Mermaid-Syntax leicht vertan. Aber all das war schnell gefixed. Ich benötigte noch zwei bis drei Iterationen weil ich im Ausgangsprompt einige Features vergessen hatte. 
+
+Der erste Härtetest kam beim Testen mit dem https://models.geo.admin.ch/BAK/ISOS_V2.ili[ISOS-MDM], das zu einer Exception führte. Und hier zeigt sich eine schöne Herausforderung, wenn die KI dir den Code schreibt: Habe ich genügend Wissen, um der KI überhaupt wieder genug Informationen zu füttern, damit sie den Bug fixen kann? Glücklich schätzen kann man sich, wenn das vor dem Go-live passiert. Im vorliegenden Fall wusste ich, wo es passiert und was am Modell speziell sein könnte (Hallo &laquo;Kataloge&raquo;!?). Mit diesen Inputs konnte ChatGPT den Fehler finden und beheben und das ISOS-MDM wird nun korrekt gerendert. 
+
+Das Problem der unleserlichen Darstellung habe ich so gelöst, dass es neu eine zusätzliche Seite nur mit dem Klassendiagramm gibt. In der Seite kann man zoomen und pannen. Somit wird auch https://geo.so.ch/modelfinder/uml?serverUrl=https://models.interlis.ch&file=core/IlisMeta16.ili[unser aller liebstes INTERLIS-Datenmodell] erlebbar:
+
+image::umldiagramm.png[alt="UML Diagramm", align="center"]
+
+Links:
+
+- https://geo.so.ch/modelfinder
+- https://github.com/edigonzales/modelfinder
+

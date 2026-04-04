@@ -1,0 +1,133 @@
+---
+= INTERLIS leicht gemacht #27 - ilivalidator/ili2db JVM-Benchmarking
+Stefan Ziegler
+2021-11-28
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,ilivalidator,ili2db,JVM
+:idprefix:
+---
+Java und die JVM entwickeln sich. Momentan sind wir bei Version 17 angelangt. Zeit zu schauen, ob sich die Entwicklung auch auf die Geschwindigkeit von https://github.com/claeis/ilivalidator[`ilivalidator`] und https://github.com/claeis/ili2db[`ili2db`] niederschlägt.
+
+**Testumgebung**
+
+Weil ich neben unterschiedlichen Versionen der &laquo;normalen&raquo; JVM auch die https://www.graalvm.org/java/[GraalVM] testen will, kann ich nicht die Benchmarks nicht direkt auf macOS mit einem Apple Silicon Prozessor ausführen, sondern ich verwende https://multipass.run/[Multipass], um die Benchmarks in einer Ubuntu-ARM-VM laufen zu lassen. Das Gute an Multipass ist, dass es einfach ist und im Gegensatz zu z.B. VirtualBox auch auf einem Apple Silicon Rechner läuft. Zudem ist für den ili2db-Benchmark eine PostgreSQL-Datenbank notwendig. Weil unter macOS der I/O mit Docker sehr schlecht ist und damit garantiert der limitierende Faktor des Benchmarks sein würde, kommt mir das Ausweichen auf Linux gerade recht.
+
+Die Benchmarks selber sind sehr einfach gehalten. Es sind sowas wie &laquo;Java-Skripte&raquo;. Nämlich eine Java-Klasse, die mit https://www.jbang.dev/[jbang] ausgeführt wird.
+
+Den Code gibt es hier: https://github.com/edigonzales/ilivalidator-java-perf-test
+
+**Benchmark**
+
+- Ubuntu 20.04
+- 4 CPUS / 8 GB 
+- JVM mit -Xmx2048m
+- ilivalidator 1.11.11
+- ili2pg 4.6.1
+
+Es wurde die amtliche Vermessung (ITF) sämtlicher 107 Solothurner Gemeinden, alle vorhandenen Nutzungsplanungsdaten (53 Gemeinden, XTF) und das MOpublic des gesamten Kantons als einzelne XTF-Datei geprüft. Für das Benchmarking von `ili2pg` wurde nur die amtliche Vermessung sämtlicher Gemeinden und das MOpublic verwendet. Die 53 Gemeinden der Nutzungsplanung waren mengenmässig schlichtweg zu wenig representativ, d.h. der Import (jeweils ohne Validierung) ging zu schnell.
+
+Insbesondere wurden mit Java 17 jeweils zwei unterschiedliche Garbage Collectors getestet. Der seit Java 9 standardmässig verwendete _Garbage First Garbage Collector (G1GC)_ und der _Throughput Collector (ParallelGC)_. Letzterer war in Java 8 der Standard-GC und noch immer verfügbar in neueren Java-Versionen.
+
+Es wurden jeweils drei Durchläufe gemacht und die Zeit gemittelt.
+
+**Resultate**
+
+Für `ilivalidator` ergeben sich folgende Resultate:
+
+.Amtliche Vermessung (107 Gemeinden) - INTERLIS 1
+[cols="1,1"]
+|===
+|Java Version |Avg. Time (mins:secs)
+
+|Java 8 (temurin)
+|10:21
+|Java 17 (temurin + G1GC)
+|10:06
+|Java 17 (temurin + ParallelGC)
+|9:39
+|Java 17 (graalvm + G1GC)
+|11:25
+|Java 17 (graalvm + ParallelGC)
+|11:07
+|===
+
+.Nutzungsplanung Kanton SO (53 files) - INTERLIS 2
+[cols="1,1"]
+|===
+|Java Version |Avg. Time (mins:secs)
+
+|Java 8 (temurin)
+|8:02
+|Java 17 (temurin + G1GC)
+|7:44
+|Java 17 (temurin + ParallelGC)
+|7:12
+|Java 17 (graalvm + G1GC)
+|7:39
+|Java 17 (graalvm + ParallelGC)
+|7:08
+|===
+
+.MOpublic Kanton Solothurn (1 file, 2.4 GB) - INTERLIS 2
+[cols="1,1"]
+|===
+|Java Version |Avg. Time (mins:secs)
+
+|Java 8 (temurin)
+|7:47
+|Java 17 (temurin + G1GC)
+|7:59
+|Java 17 (temurin + ParallelGC)
+|7:22
+|Java 17 (graalvm + G1GC)
+|8:03
+|Java 17 (graalvm + ParallelGC)
+|7:21
+|===
+
+Für `ili2pg` ergeben sich folgende Resultate:
+
+.Amtliche Vermessung (107 Gemeinden) - INTERLIS 1
+[cols="1,1"]
+|===
+|Java Version |Avg. Time (mins:secs)
+
+|Java 8 (temurin)
+|25:45
+|Java 17 (temurin + G1GC)
+|25:12
+|Java 17 (temurin + ParallelGC)
+|24:53
+|Java 17 (graalvm + G1GC)
+|25:37
+|Java 17 (graalvm + ParallelGC)
+|25:00
+|===
+
+.MOpublic Kanton Solothurn (1 file, 2.4 GB) - INTERLIS 2
+[cols="1,1"]
+|===
+|Java Version |Avg. Time (mins:secs)
+
+|Java 8 (temurin)
+|12:26
+|Java 17 (temurin + G1GC)
+|12:36
+|Java 17 (temurin + ParallelGC)
+|11:48
+|Java 17 (graalvm + G1GC)
+|12:37
+|Java 17 (graalvm + ParallelGC)
+|11:47
+|===
+
+**Fazit**
+
+- Java 17 mit ParallelGC ist die schnellste Variante.
+- GraalVM bringt für diesen Anwendungsfalls nichts resp. ist eventuell sogar kontraproduktiv.
+- ili2db-Benchmarks sind nicht sehr aussagekräftig, da wohl sehr viel vom Lesen/Schreiben von/in die Datenbank abhängig ist.
+
+Interessant ist ein Vergleich mit meinem 2016er-MacBookPro. Die Validierung der amtlichen Vermessung aller 107 Gemeinden dauerte circa 25 Minuten. Also 2.5 Mal so lange wie mit dem MacBook Air mit Apple Silicon, das lüfterlos knapp handwarm wird.
+
+Für die Praxis fast noch interessanter ist der Vergleich mit https://geodienste.ch[geodienste.ch]. Dort dauert die Validierung der amtlichen Vermessung circa eine Stunde. Ich muss noch abklären, ob das gleiche gemacht wird. Aber falls ja, müssten sie sich besser ein paar Mac minis ins Rechenzentrum schieben...

@@ -1,0 +1,164 @@
+---
+= Interlis leicht gemacht #14
+Stefan Ziegler
+2017-02-13
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,ilivalidator
+:idprefix:
+---
+Letzte Woche wurde von `ilivalidator` die Version https://github.com/claeis/ilivalidator[0.10.0] veröffentlicht. Diese Version beinhaltet ein neues, cooles Feature. Nämlich die Erweiterung der INTERLIS-Prüfung mit eigenen Tests. Hier eine _Sneak Preview_ was schon geht (resp. was ich rausgefunden habe, was geht):
+
+Gemäss http://blog.sogeo.services/blog/2016/05/30/interlis-leicht-gemacht-number-9.html[Auftragsspezifikation] dürfte das R2.6 und R2.7 sein. Das will heissen, dass jetzt einerseits die INTERLIS-Standardfunktionen (kannte ich nicht, siehe Kapitel 2.14 des http://www.interlis.ch/interlis2/docs23/ili2-refman_2006-04-13_d.pdf[INTERLIS-Referenzhandbuches]) vorhanden sind und andererseits lassen sich eigene Funktionen für die Validierung definieren.
+
+Definiert werden diese zum Ausgangsmodell zusätzlichen Prüfungen wiederum mit INTERLIS. Nämlich mit CONSTRAINTS. Gegenwärtig muss man es noch direkt im Ausgangsmodell machen, was natürlich unschön ist. Soweit ich mich noch erinnere, soll das zukünftig aber über VIEWS in einem abgeleiteten Modell passieren. Dann hätte man das &laquo;Original&raquo;-Ausgangsmodell und ein Modell mit den zusätzlich definierten Checks. 
+
+Die Definition mit INTERLIS in einem Modell mag auf den ersten Blick exotisch wirken. Wahrscheinlich weil man eher etwas wie eine &laquo;Check-Definitions-Sprache&raquo; erwartet. Aber eben, diese braucht es gar nicht, weil man das genau so gut mit INTERLIS machen kann. Zudem kann ich diese zusätzlichen Modelle wiederum in einer INTERLIS-Modellablage verwalten und zur Verfügung stellen.
+
+Zurück zum eigentlichen Validieren: Zum Rumspielen habe ich mir ein http://blog.sogeo.services/data/interlis-leicht-gemacht-number-14/FunctionTests.ili[Test-Modell] (angelehnt an das MOpublic) für Fixpunkte gebastelt und dazu ein paar Daten in eine http://blog.sogeo.services/data/interlis-leicht-gemacht-number-14/control_points.xtf[XTF-Datei] gespielt. Will ich jetzt z.B. die Länge der Fixpunktnummer auf acht Zeichen beschränken (erlaubt sind gemäss Modell zwölf), kann ich mit einer Standardfunktion einen zusätzlichen CONSTRAINT definieren:
+
+[source,java,linenums]
+----
+CLASS Control_point =
+  Category : MANDATORY 0..5; 
+  IdentND : MANDATORY TEXT*12;
+  Number : MANDATORY TEXT*12;
+  Geometry : MANDATORY Coord2;
+  Plan_accuracy : Accuracy;
+  Geom_alt : Altitude;
+  Alt_accuracy : Accuracy;
+  Mark : MANDATORY 0..8; 
+  State_of : XMLDateTime;
+  FOSNr : 0 .. 9999;
+  UNIQUE IdentND, Number;
+  MANDATORY CONSTRAINT (INTERLIS.len (Number)) == 8;
+END Control_point;
+----
+
+Sollte soweit selbsterklärend sein. Wenn ich jetzt bewusst einen Fehler - also eine Nummer eines Fixpunktes länger als acht Zeichen - einbaue, erscheint auf der Konsole folgende Fehlermeldung:
+
+[source]
+----
+Error: line 68: FunctionTests.Control_points.Control_point: tid a01868e1-11fd-4c7c-a109-341b778b4d44: Mandatory Constraint FunctionTests.Control_points.Control_point.Constraint2 is not true.
+----
+
+Das ist natürlich noch nicht das Gelbe vom Ei. Immerhin stehen TID und die Zeilennummer in der Meldung. Aber wichtig wären selber definierbare Fehlermeldungen.
+
+Wenn ich jetzt die absolute Validierungsfreiheit will, kann ich meine Funktion in Java selber schreiben. Dazu muss man bloss ein https://github.com/claeis/iox-ili/blob/feature/validator1/src/main/java/ch/interlis/iox_j/validator/InterlisFunction.java[Interface] implementieren. Als Beispiel diente mir https://github.com/claeis/iox-ili/blob/feature/validator1/src/test/java/ch/interlis/iox_j/validator/SubText.java[eine Klasse], die ich unter den Tests gefunden haben. Ich bin dann so vorgegangen, dass ich mir die benötigten Bibliotheken aus der Fatjar-Ilivalidator-Bibliothek, die ich mir mit jedem neuen Release generiere, aus meinem quick 'n' dirty Maven-Repository https://git.sogeo.services/stefan/ilivalidator-extensions/src/master/src/ilivalidator-extensions/build.gradle[hole]. Programmieren kann man mit der IDE seiner Wahl.
+
+Als zusätzliche Validierung möchte ich prüfen, ob die ersten vier Zeichen der LFP2-Fixpunktnummer mit einem Prefix zusammen dem Attribut _IdentND_ (= NBIdent) entspricht. Da bin ich eigentlich davon ausgegangen, dass das immer so sein sollte. Die ersten vier Zeichen der LFP2-Punkte entsprechen der 1:25'000-Landeskartenblattnummer und der Prefix (= CH030000) ist für LFP2 ebenfalls fix definiert. Die Kombination sollte dem NBIdent entsprechen.
+
+Im Gegensatz zu den Standardfunktionen, muss ich im INTERLIS-Modell die Funktion zuerst deklarieren und mit einem INTELRIS-Metaattribut versehen, damit `ilivalidator` weiss, in welcher Java-Klasse diese Funktion steckt:
+
+[source,java,linenums]
+----
+!!@ilivalid.impl.java=org.catais.ilivalidator.ext.IdentND
+FUNCTION identND (number: TEXT): TEXT;
+----
+
+Hier steckt die Funktion also in der Klasse `org.catais.ilivalidator.ext.IdentND`. Die Funktion erwartet einen Parameter vom Typ TEXT und gibt ebenfalls wieder einen Wert vom Typ TEXT zurück.
+
+Die Defintion des CONSTRAINTS ist genau gleich wie bei den Standardfunktionen:
+
+[source,java,linenums]
+----
+MANDATORY CONSTRAINT identND(Number) == IdentND;
+----
+
+Ich übergebe der Funktion also die Fixpunktnummer und die Funktion bastelt mir daraus den &laquo;theoretischen&raquo; NBIdent. Diesen vergleicht der CONSTRAINT mit dem NBIdent aus dem Datensatz. Der Java-Code ist keine Rocket-Science:
+
+[source,java,linenums]
+----
+package org.catais.ilivalidator.ext;
+
+import ch.ehi.basics.settings.Settings;
+import ch.interlis.ili2c.metamodel.FunctionCall;
+import ch.interlis.ili2c.metamodel.TextType;
+import ch.interlis.ili2c.metamodel.TransferDescription;
+import ch.interlis.iom.IomObject;
+import ch.interlis.iox.IoxValidationConfig;
+import ch.interlis.iox_j.validator.InterlisFunction;
+import ch.interlis.iox_j.validator.Value;
+
+public class IdentND implements InterlisFunction {
+    private IomObject mainObj;
+    private Value[] actualArguments;
+
+    private String prefix = "CH030000";
+
+    @Override
+    public void init(TransferDescription td, FunctionCall func,Settings settings,IoxValidationConfig validationConfig) {
+    }
+
+    @Override
+    public void addObject(IomObject mainObj, Value[] actualArguments) {
+        this.setMainObj(mainObj);
+        this.setActualArguments(actualArguments);
+    }
+
+    @Override
+    public Value evaluate() {
+        Value[] args = getActualArguments();
+
+        if (args[0].skipEvaluation()) {
+            return args[0];
+        }
+        if (args[0].isUndefined()) {
+            return Value.createSkipEvaluation();
+        }
+        String number = args[0].getValue();
+
+        String identnd = prefix + number.substring(0,4);
+        TextType text = new TextType();
+        return new Value(text, identnd);
+    }
+
+    private IomObject getMainObj() {
+        return mainObj;
+    }
+
+    private void setMainObj(IomObject mainObj) {
+        this.mainObj = mainObj;
+    }
+
+    private Value[] getActualArguments() {
+        return actualArguments;
+    }
+
+    private void setActualArguments(Value[] actualArguments) {
+        this.actualArguments = actualArguments;
+    }
+----
+
+In der Methode `evaluate()` findet das Zusammenbasteln des _NBIdents_ statt. Grundsätzlich stehen verschiedene Objekte und Werte in der Klasse zur Verfügung. So z.B. auch das komplette INTERLIS-Objekt (`mainObj`) bei dem der CONSTRAINT definiert ist.
+
+Ist man damit fertig, muss man `ilivalidator` nur noch davon in Kenntnis setzen, dass es jetzt eine zusätzlich Klasse gibt, der er bitteschön berücksichtigen soll. Leicht naiv dachte ich, dass es reicht, wenn man die generierte Jar-Datei einfach in das `libs`-Verzeichnis von `ilivalidator` kopiert. Aber er wollte und wollte die Funktion nicht finden:
+
+[source]
+----
+Error: line 3972: FunctionTests.Control_points.Control_point: tid 90379a91-29e2-4960-a88f-822c16b8ef3b: Function is not yet implemented.
+----
+
+Auch das explizite Setzen des Classpaths beim Java-Aufruf brachte nichts: 
+
+[source,java,linenums]
+----
+java -cp 'libs/ilivalidator-extensions-0.0.1-SNAPSHOT.jar' -jar ilivalidator.jar --modeldir "http://models.geo.admin.ch;." control_points.xtf
+----
+
+Profis schütteln den Kopf: Anscheinend kann man `-cp` und `-jar` https://www.youtube.com/watch?v=CptdTBDkK_g[nicht kombinieren]:
+
+[source,java,linenums]
+----
+java -cp '/Users/stefan/Apps/ilivalidator-0.10.0/ilivalidator.jar:/Users/stefan/Apps/ilivalidator-0.10.0/libs/*' org.interlis2.validator.Main --modeldir "http://models.geo.admin.ch;." control_points.xtf
+----
+
+Sieht doof aus, ist aber egal. _In Production_ kann man das sicher übersichtlicher lösen. Jedenfalls hat die Prüfung mit meiner Klasse ergeben, dass bei einem Fixpunkt die Nummer nicht stimmt. Oder das Abweichen von der definierten Logik wurde bewusst in Kauf genommen, da der Punkt ein Teil einer Punktgruppe ist und nur https://s.geo.admin.ch/7178989444[wenige Meter im anderen Kartenblatt] liegt.
+
+Mit der Möglichkeit eigener Validierungsfunktionen öffnen sich nun viele Türen: So können Webservice oder Datenbanken angezapft werden, um die zu prüfenden Daten mit Referenz- oder Drittdaten (z.B. GWR) zu vergleichen.
+
+Auf die Schnelle konnte ich zwei Dinge nicht umsetzen, die ich gerne wollte. Da ist der Vergleich eines Attributes mit einem Teil des Transferdateinamens. So wie ich den Code verstehe, ist der Transferdateiname unbekannt, da pro `IoxEvent` https://github.com/claeis/ilivalidator/blob/master/src/org/interlis2/validator/Validator.java#L130[geprüft] wird. Eventuell könnte man ihn in den Settings unterbringen. Die Settings stehen im `InterlisFunction`-Interface zur Verfügung. Vielleicht auch super unelegant...
+
+Das zweite Problem ist das Prüfen von LIST und BAG OF Geschichten. Da weiss ich sowieso noch nicht, ob ich die Syntax richtig verstanden habe und ich wünschte mir, dass man mit einem CONSTRAINT alle Elemente (in meinem Fall STRUCTURE) der BAG/LIST prüfen kann. 
+
+Eine Demo mit einer eigenen Funktion findet sich https://git.sogeo.services/stefan/ilivalidator-demo-2017-02-14[hier]. Das dazugehörige Java-Gefrickel gibt es https://git.sogeo.services/stefan/ilivalidator-extensions/src/master/src/ilivalidator-extensions[hier].

@@ -1,0 +1,107 @@
+---
+= INTERLIS leicht gemacht #33 - Python loves INTERLIS
+Stefan Ziegler
+2022-12-11
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Python,Java,GraalVM
+:idprefix:
+---
+Die https://geobeer.ch/[GeoBeer-Events] sind eine tolle Sache. Wenn man aber den Mund mit zunehmender Menge Bier immer voller nimmt, ist man halt selber schuld: Für einen Github-Stern versprach ich, dass ich einen Proof of Concept der Java-INTERLIS-Werkzeuge als Python-Package mache, weil das mit https://graalvm.org[GraalVM] &laquo;ganz einfach und schnell geht&raquo;.
+
+Die Idee ist, dass man z.B. https://github.com/claeis/ilivalidator[`ilivalidator`] wie praktisch jedes andere Python Package installieren kann:
+
+----
+pip install ilivalidator
+----
+
+Und natürlich ohne den ganzen Java-Zauber, d.h. es soll ganz ohne Java funktionieren. Über die Jahre habe ich bereits einiges mit GraalVM in dieser Richtung gemacht. Darum auch die Euphorie, dass das alles kein Problem sei. Die grösste Unbekannte war für mich eher wie man ein Python Package macht (inkl. Shared Library) und das zum Download für _pip_ bereitstellt. Das Ganze soll natürlich ebenfalls als Github Action in einer OS-Matrix laufen. Aber der Reihe nach:
+
+Mit GraalVM lassen sich nicht bloss die INTERLIS-Werkzeuge zu einem http://blog.sogeo.services/blog/2022/11/01/interlis-leicht-gemacht-number-31.html[Native Image] kompilieren, sondern es lassen sich auch sogenannte Native Shared Libraries machen. Das sind Bibliotheken, die man in einem C/C++-Programm verwenden kann (aka *.so und *.dll). Diese lassen sich auch in einem Python-Skript gut ansteuern und verwenden. Wenn man nicht das komplette Programm zu einem Native Image kompilieren will, sondern zu einer Shared Library, muss man ein paar Zeilen zusätzlichen Code schreiben. Nämlich eine statische Java-Methode:
+
+[source,Java,linenums]
+----
+package ch.so.agi.ilivalidator.libnative;
+
+import org.graalvm.nativeimage.IsolateThread;
+import org.graalvm.nativeimage.c.function.CEntryPoint;
+import org.graalvm.nativeimage.c.type.CCharPointer;
+import org.graalvm.nativeimage.c.type.CTypeConversion;
+import org.interlis2.validator.Validator;
+
+import ch.ehi.basics.settings.Settings;
+
+public class IlivalidatorLib {
+    
+    @CEntryPoint(name = "ilivalidator")
+    public static boolean validate(IsolateThread thread, CCharPointer dataFilename) {
+        var settings = new Settings();
+        boolean valid = Validator.runValidation(CTypeConversion.toJavaString(dataFilename), settings);
+        return valid;
+    }
+}
+----
+
+Diese statische Methode muss mit `@CEntryPoint` annotiert werden, damit sie im C/C++-Programm aufrufbar wird. Es gibt ein wenig GraalVM-Boilerplate (`IsolateThread thread`), der uns aber nicht gross stören soll. Weil es ein Proof of Concept ist, ist die Methode sehr einfach gehalten. Es kann nur der Dateinamen der zu prüfenden INTERLIS-Transferdatei übergeben werden. Als Typ muss `CCharPointer` verwendet werden, der später zu einem Java-String umgewandelt wird. Es können nur wenige Typen verwenden werden. Es wird als nicht möglich sein z.B. eine `Settings`-Klasse zu übergeben. Das ist aber weniger schlimmer als zuerst befürchtet. Die Settings können z.B. als JSON-String übergeben werden und anschliessend in der Methode zu ihren korrekten Optionen gemappt werden. Das Resultat nach dem Kompilieren mit GraalVM sind Header-Dateien und die Shared Library. Im Gegensatz zu Java-Bibliothekn muss die Shared Library für jedes Betriebssystem kompiliert werden.
+
+Python bietet mit `ctypes` eine Bibliothek, die Funktionen in einer Shared Library aufrufen kann. Die Python-Ilivalidator-Klasse sieht so aus:
+
+[source,Python,linenums]
+----
+import platform
+
+from ctypes import *
+from importlib_resources import files
+
+if platform.uname()[0] == "Windows":
+    lib_name = "libilivalidator.dll"
+elif platform.uname()[0] == "Linux":
+    lib_name = "libilivalidator.so"
+else:
+    lib_name = "libilivalidator.dylib"
+
+class Ilivalidator:                     
+    def validate(data_file_name):
+        lib_path = files('ilivalidator.lib_ext').joinpath(lib_name)
+        # str() seems to be necessary on windows: https://github.com/TimDettmers/bitsandbytes/issues/30
+        dll = CDLL(str(lib_path))
+        isolate = c_void_p()
+        isolatethread = c_void_p()
+        dll.graal_create_isolate(None, byref(isolate), byref(isolatethread))
+        dll.ilivalidator.restype = bool
+
+        result = dll.ilivalidator(isolatethread, c_char_p(bytes(data_file_name, "utf8")))
+        return result
+
+Ilivalidator.validate = staticmethod(Ilivalidator.validate)
+----
+
+Zuerst musst die Library geladen werden. Anschliessend wird in Zeile 23 die `ilivalidator`-Funktion in der Shared Library aufgerufen. 
+
+Nun kam der wirklich schwere Teil: Wie macht man ein Python Package und wie stelle ich dieses bereit? Als totaler Python-Fremdling war das eine echte Herausforderung. Einfach weil man es nicht kennt und aus einer völlig anderen Welt kommt. Nach ein wenig Einlesen und Googeln hatte ich mein Package soweit und konnte es auf test.pypi.org veröffentlichen. 
+
+Eine weitere Herausforderung war das Testen unter Windows. Vor allem fehlte mir die Windows-Testumgebung. Klar kann ich relativ einfach den Code mit einer Github Action auf einem Windows-Runner testen. Das Debuggen ist jedoch so ziemlich schwierig. Auf meinem Macbook Air mit https://mac.getutm.app/[UTM] geht das wegen des ARM-Prozessors schon mal nicht (so gut), da es keinen Github Runner für Windows ARM gibt, der die Shared Library kompilieren könnte. Darum musste das alte Intel-Macbook her. Netterweise bietet Microsoft https://developer.microsoft.com/en-us/windows/downloads/virtual-machines/[Windows 11 Images] für verschiedene Hypervisoren. Die Kombination mit Virtualbox erwies sich aber als unbrauchbar, da Windows nach kurzer Zeit nicht mehr auf Eingaben reagierte. Mit dem leider nicht freien Parallels funktioniert es aber sehr gut. Somit konnte ich das Python Package auch unter Windows 11 testen und paar Fehler ausmerzen. Klammerbemerkung: Warum man einfach mal `str()` verwenden soll, damit es unter Windows läuft, weiss nur der liebe Gott oder ein Python-Guru. Erinnert mich an meine C-Experimente während des Studiums: Hat man das Prinzip mit den Zeigern nicht so wirklich verstanden, probiert man es mit `*foo` und wenn das nicht funktioniert, versucht man `&foo`. Profis am Werk.
+
+Nun denn, here it is: https://pypi.org/project/ilivalidator/[https://pypi.org/project/ilivalidator/]
+
+Das Package lässt sich mit _pip_ installieren:
+
+```
+pip install ilivalidator
+```
+
+Innerhalb eine Python-Skripts kann ich `ilivalidator` wie folgt aufrufen:
+
+[source,Python,linenums]
+----
+from ilivalidator import Ilivalidator
+
+valid = Ilivalidator.validate('tests/data/254900.itf')
+print("The file is valid: {}".format(valid))
+----
+
+Es sind keine ilivalidator-Optionen exponiert und somit ist es wirklich nur ein Proof of Concept. Aber nun steht alles und man müsste Fleissarbeit leisten. Die anderen Java-INTERLIS-Werkzeuge lassen sich analog als Python Package bereitstellen.
+
+Weil es kein pures Python Package ist (sondern abhängig von Native Shared Libraries ist), muss man für jedes Betriebssystem, Betriebssystemvariante und Prozessor-Architektur das Package herstellen. Momentan lässt sich das einfach für folgende Schnittmenge bewerkstelligen: Die Betriebssysteme und Prozessor-Architekturen, die GraalVM Native Image unterstützt und die frei verfügbaren Github Action Runner. In meiner Github Action kompiliere ich auf Ubuntu 22.04, macOS 12 und Windows 2022 jeweils auf x86_64 (also nicht ARM). Man könnte z.B. für Linux ARM bei Oracle Cloud gratis einen Self-Hosted Runner erstellen oder analog für Apple Silicon bei Hetzner einen Mac mini mieten. Die verfügbaren Kombinationen finden sich auf pypi.org unter https://pypi.org/project/ilivalidator/#files[&laquo;Download files&raquo;]. 
+
+So, jetzt will ich meinen https://github.com/pylitools/ilivalidator[Github-Stern].

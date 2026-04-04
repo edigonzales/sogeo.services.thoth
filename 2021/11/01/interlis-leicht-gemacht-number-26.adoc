@@ -1,0 +1,116 @@
+---
+= INTERLIS leicht gemacht #26 - Runtime Parameter
+Stefan Ziegler
+2021-11-01
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,ilivalidator
+:idprefix:
+---
+Wer kennt sie nicht? Die INTERLIS-Laufzeitparameter (siehe https://www.interlis.ch/download/interlis2/ili2-refman_2006-04-13_d.pdf[Referenzhandbuch Kapitel 2.11]). Also zum Beispiel ich. Jedenfalls waren sie mir lange nicht bekannt. Sie sind jedoch die Lösung für eine bekannte Herausforderung: Die Nachführungsgeometer schicken die Geschäfte via AVGBS ans Grundbuch. Der Name der Transferdatei muss dabei gewisse Konventionen erfüllen. Ganz einfach formuliert, muss der Name der Datei einem Attributwert innerhalb der Datei entsprechen. In Tat und Wahrheit ist es leicht komplexer aber es geht ums grundlegende Prinzip. Wie kann https://github.com/claeis/ilivalidator[`ilivalidator`] nun prüfen, ob der Namen der zu prüfenden Datei einem Werte eines Attributes der zu prüfenden Daten selbst entspricht? Runtime Parameter to the rescue!
+
+So wie ich das Referenzhandbuch verstehe, ist die Verfügbarkeit von Laufzeitparametern vom System abhängig:
+
+&laquo;Nebst den eigentlichen Daten und den Metadaten können auch einzelne Datenelemente definiert werden, bei denen erwartet wird, dass sie von einem Bearbeitungs-, Auswerte- oder Darstellungssystem zur Laufzeit bereitgestellt werden. Sie heissen Laufzeitparameter.&raquo;
+
+Unser Auswertesystem `ilivalidator` kennt zum jetzigen Zeitpunkt folgende Laufzeitparameter:
+
+- `RuntimeSystemName`: Name der Software, z.B. &laquo;ilivalidator&raquo; (ilivalidator)
+- `RuntimeSystemVersion`: Version der Software, z.B. &laquo;1.11.11&raquo; (ilivalidator)
+- `OperatingSystemName`: Betriebssystem, z.B. &laquo;Mac OS X&raquo; (ili2c)
+- `HostName`: Name des Hosts, z.B. &laquo;localhost&raquo; (ili2c)
+- `CurrentUserName`: Name des Users, der den Prozess startet, z.B. &laquo;stefan&raquo; (ili2c)
+- `CurrentDateTime`: Zeitpunkt des Prozesstarts, z.B. &laquo;2017-08-22T15:00:00.000&raquo; (ili2c)
+- `CurrentTransferfile`: Name der zu prüfenden Datei, z.B. &laquo;SO0200002403_1180.xml&raquo; (ilivalidator)
+
+Machen wir ein Beispiel anhand eines sehr einfachen Modelles:
+
+[source,xml,linenums]
+----
+INTERLIS 2.3;
+MODEL Testmodel
+  AT "mailto:stefan.ziegler@bd.so.ch" VERSION "2019-01-27" =
+      
+  IMPORTS MinimalRuntimeSystem01;
+
+    TOPIC Topic =
+
+        CLASS ClassA =
+            attr2 : TEXT;     
+            MANDATORY CONSTRAINT attr2==PARAMETER MinimalRuntimeSystem01.CurrentTransferfile;       
+        END ClassA;
+                      
+    END Topic;
+    
+END Testmodel.
+----
+
+Das Modell muss das MinimalRuntimeSystem01-Datenmodell importieren. Dieses ist Stand heute noch in keiner Modellablage vorhanden, muss also lokal vorliegen. Die Klasse hat genau ein Attribut `attr2` und einen `MANDATORY CONSTRAINT`, der die gewünschte Prüfung übernimmt. 
+
+Der Inhalt der Datei SO0200002403_1180.xtf sieht wie folgt aus:
+
+[source,xml,linenums]
+----
+<?xml version="1.0" encoding="UTF-8"?>
+<TRANSFER xmlns="http://www.interlis.ch/INTERLIS2.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <HEADERSECTION SENDER="sogis" VERSION="2.3">
+  </HEADERSECTION>
+  <DATASECTION>
+    <Testmodel.Topic BID="b1">
+      <Testmodel.Topic.ClassA TID="o1">
+        <attr2>SO0200002403_1180.xtf</attr2>
+      </Testmodel.Topic.ClassA>
+    </Testmodel.Topic>
+  </DATASECTION>
+</TRANSFER>       
+----
+
+Ich kann `ilivalidator` wie gewohnt starten und erhalte das Resultat der Prüfung.
+
+```
+java -jar ilivalidator-1.11.11.jar SO0200002403_1180.xtf
+```
+
+Ändere ich entweder den Namen der Datei oder den Wert des Attributes `attr2`, erscheint eine Fehlermeldung:
+
+```
+Error: line 7: Testmodel.Topic.ClassA: tid o1: Mandatory Constraint Testmodel.Topic.ClassA.Constraint1 is not true.
+```
+
+Die Fehlermeldung kann man mit einem Metaattribut gehaltvoller machen:
+
+[source,xml,linenums]
+----
+!!@ ilivalid.msg = "attr2 = {attr2} entspricht Dateinamen."
+MANDATORY CONSTRAINT attr2==PARAMETER MinimalRuntimeSystem01.CurrentTransferfile;    
+----
+
+Ilivalidator kennt noch eine weitere Syntax für die Verwendung der Laufzeitparameter in Constraints:
+
+[source,xml,linenums]
+----
+MANDATORY CONSTRAINT attr2==MinimalRuntimeSystem01.getParameterValue("MinimalRuntimeSystem01.CurrentTransferfile");    
+----
+
+Muss man für die Validierung eine eigene https://github.com/claeis/ilivalidator/blob/master/demoplugin/src/org/interlis2/validator/demo/CheckGebaeudeVersicherungsSystemIoxPlugin.java[`InterlisFunction`] implementieren und benötigt Laufzeitparameter, können diese via `TransferDescription` ausgelesen werden. Die benötigen Methoden sind `getActualRuntimeParameters()` resp. `getActualRuntimeParameter(...)`. In Unit-Tests muss z.B. der `CurrentTransferfile`-Parameter explizit selber gesetzt werden, weil es ja keine Datei gibt, die geprüft wird, sondern nur Objekte:
+
+[source,java,linenums]
+----
+Iom_jObject iomObjA = new Iom_jObject(ILI_CLASSA, OBJ_OID1);
+iomObjA.setattrvalue("attr2", "SO0200002601_3396.xml");
+ValidationConfig modelConfig = new ValidationConfig();
+modelConfig.mergeIliMetaAttrs(td);
+LogCollector logger = new LogCollector();
+LogEventFactory errFactory = new LogEventFactory();
+Settings settings = new Settings();
+Map<String,Class> newFunctions = new HashMap<String,Class>();
+newFunctions.put("SO_FunctionsExt.RuntimeDummy", RuntimeDummyIoxPlugin.class);
+settings.setTransientObject(Validator.CONFIG_CUSTOM_FUNCTIONS, newFunctions);
+td.setActualRuntimeParameter(ch.interlis.ili2c.metamodel.RuntimeParameters.MINIMAL_RUNTIME_SYSTEM01_CURRENT_TRANSFERFILE, "SO0200002601_3396.xml");
+Validator validator=new Validator(td, modelConfig, logger, errFactory, new PipelinePool(), settings);
+validator.validate(new StartTransferEvent());
+validator.validate(new StartBasketEvent(ILI_TOPIC,BID1));
+validator.validate(new ObjectEvent(iomObjA));
+validator.validate(new EndBasketEvent());
+validator.validate(new EndTransferEvent());
+----

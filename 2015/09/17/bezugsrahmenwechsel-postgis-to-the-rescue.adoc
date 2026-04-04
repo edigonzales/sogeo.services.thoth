@@ -1,0 +1,45 @@
+---
+= Bezugsrahmenwechsel: PostGIS to the rescue
+Stefan Ziegler
+2015-09-17
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: PostGIS,Bezugsrahmenwechsel,LV95
+:idprefix:
+---
+Gute Mitarbeiter mit guten Ideen. Was dabei rauskommt? Die PostgreSQL-Funktion `ST_Fineltra`.
+
+Wie wahrscheinlich viele andere Kantone auch wollten wir mit http://www.safe.com/[FME] und dem http://www.swisstopo.admin.ch/internet/swisstopo/de/home/products/software/products/reframe_fme.html[REFRAME-Plugin] die Daten in unserer PostgreSQL-Datenbank transformieren. Das funktioniert und ist genügend schnell. So richtig glücklich wurden wir aber nicht damit:
+
+* Warum sollen wir Daten mit einer Drittapplikation ausserhalb der Datenbank transformieren, um sie dann wieder in der Datenbank zu speichern? Wenn ich mit `ST_Transform` Daten in ein anderes Koordinatensystem transformiere, muss ich das ja auch nicht machen.
+* In einer Übergangsphase müssen wir wohl oder über die Flexibilität und Fähigkeit besitzen Daten in beiden Bezugsrahmen anbieten und verwalten zu können. Für diese Aufgaben will/kann ich nicht immer gleich FME anschmeissen.
+* Wir hatten mit FME Probleme bei Tabellen, die mehrere Geometrieattribute aufweisen. War alles machbar, wirkte aber hakelig.
+
+Warum also nicht ein Funktion à la `ST_Transform`, die es ermöglicht die Daten mit der offiziellen http://www.swisstopo.admin.ch/internet/swisstopo/de/home/topics/survey/lv95/lv03-lv95/chenyx06.html[Dreiecksvermaschung] zu transformieren? `ST_Fineltra` war geboren. Ende Oktober sollte die Funktion als http://www.postgresql.org/docs/9.4/static/extend-extensions.html[PostgreSQL-Extension] verfügbar sein.
+
+Die Bodenbedeckung der amtlichen Vermessung mit `ST_Fineltra` transformieren?
+
+[source,sql,linenums]
+----
+UPDATE bodenbedeckung_boflaeche
+  SET geometrie_lv95 = ST_Fineltra(geometrie_lv03, 'chenyx06', 'geom_lv03', 'geom_lv95');
+----
+
+*geometrie*: Die zu transformierende Geometrie.
+
+*chenyx06*: Der Namen der Tabelle mit der Dreiecksvermaschung. Es wird also möglich sein die Funktion mit eigenen Dreiecksvermaschungen (z.B. für lokale Entzerrungen) zu verwenden.
+
+*geom_lv03*: Attributname der Dreiecksdefinitionen (in der Dreiecksvermaschungstabelle) im Ausgangsbezugsrahmen.
+
+*geom_lv95*: Attributname der Dreiecksdefinitionen (in der Dreiecksvermaschungstabelle) im Zielbezugsrahmen.
+
+Die UPDATE-Query hat den Schönheitsfehler, dass es jetzt zwei Geometrieattribute in der Tabelle gibt. Dies wollen wir vermeiden und die LV03-Geometrie in eine LV95-Geometrie transformieren. Mit folgender schicken Query ist das kein Problem:
+
+[source,sql,linenums]
+----
+ALTER TABLE bodenbedeckung_boflaeche
+  ALTER COLUMN geometrie TYPE geometry(Polygon,2056)
+    USING ST_Fineltra(geometrie, 'chenyx06', 'geom_lv03', 'geom_lv95');
+----
+
+In der Datenbanksicht `geometry_columns` sind alle notwendigen Informationen dazu vorhanden. Mit einem kleinen Skript und einer For-Schleife lassen sich jetzt alle Tabellen transformieren. In PostGIS < 2.0 ist `geometry_columns` keine Sicht, sondern eine Tabelle, die manuell nachgeführt werden muss. Entweder ist die sauber und vollständig nachführt oder man muss sich die Informationen aus den verschiedenen `pg_*`-Tabellen zusammen suchen, was die Komplexität des Skriptes natürlich erhöht. Ebenfalls muss an anfällige Triggers und Rules gedacht werden. Diese sollten vor der Transformation ausgeschaltet und anschliessend wieder eingeschaltet werden. Informationen dazu können ebenfalls aus den `pg_*`-Tabellen geholt werden.

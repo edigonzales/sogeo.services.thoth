@@ -1,0 +1,68 @@
+---
+= INTERLIS leicht gemacht #37 - The State of INTERLIS native (Summer 2023)
+Stefan Ziegler
+2023-06-22
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,GraalVM
+:idprefix:
+---
+http://blog.sogeo.services/blog/2022/11/01/interlis-leicht-gemacht-number-31.html[Letzten Herbst] habe ich https://github.com/edigonzales/ili2c-native/releases[`ili2c`], https://github.com/edigonzales/ili2pg-native/releases[`ilivalidator`] und https://github.com/edigonzales/ilivalidator-native/releases[`ili2pg`] mit https://www.graalvm.org/[GraalVM] zu einem https://www.graalvm.org/latest/reference-manual/native-image/[Native Image] kompiliert. Daraus resultiert - im Gegensatz zu den https://downloads.interlis.ch[offiziell publizierten] Versionen - eine betriebssystemabhängige Variante, die jedoch keine Java-Installation benötigt. Das Kompilieren übernimmt eine Github Action und somit können mindestens drei Betriebssysteme (Windows, Ubuntu-Linux, macOS) problemlos angeboten werden.
+
+Einen Haken hat die ganze Sache aber: Die Performance ist https://github.com/claeis/ilivalidator/issues/364[massiv schlechter] als bei den Java-Varianten. Dies wird vor allem bei der Prüfung mit ilivalidator zum Problem. Es gab bereits relativ lange eine Enterprise-Version von GraalVM, die sich diesem Problem annahm. Die Java-Variante kann in unserem Fall anscheinend massiv vom JIT-Compiler profitieren und während der Laufzeit immer mehr den Code optimieren. Das ist mit einem Native Image nicht mehr möglich. Das muss alles vorher passieren. Dies ist bei der Enterprise-Variante mit https://www.graalvm.org/22.0/reference-manual/native-image/PGO/[&laquo;Profile-Guided Optimizations&raquo;] möglich. Die Anwendung wird zuerst geprofiled und dabei Informationen gesammelt. Mit diesen Informationen wird  anschliessend der Native Image Builder gefüttert und daraus sollte eine bessere Performance resultieren. Eine zweite Baustelle ist der Garbager Collector. Die Community-Variante verfügt nur über den Serial GC, die Enterprise-Variante zusätzlich über den Garbage First Garbage Collector (G1GC), jedoch nur unter Linux. Nun hat aber auch die Enterprise-Variante einen Haken und man vermutet wohl richtig: Enterprise == $. 
+
+Mit dem neusten GraalVM-Release (Version 23) gibt es keine Enterprise-Variante mehr. Der Nachfolger heisst &laquo;Oracle GraalVM&raquo; und ist https://medium.com/graalvm/a-new-graalvm-release-and-new-free-license-4aab483692f5[frei]. Man sollte sich sicherheitshalber wohl die https://www.oracle.com/downloads/licenses/graal-free-license.html[&laquo;GraalVM Free Terms and Conditions (GFTC) license&raquo;] und die https://www.oracle.com/java/technologies/javase/jdk-faqs.html#GraalVM-licensing[FAQ] gut durchlesen.
+
+Mit all den Enterprise-Feature, die nun frei verfügbar sind, steht einem Performance-Vergleich nichts mehr im Wege. Geprüft wird ilivalidator 1.13.3 mit unserem https://data.geo.so.ch/proxy?file=https://files.geo.so.ch/ch.so.alw.fruchtfolgeflaechen/aktuell/ch.so.alw.fruchtfolgeflaechen.xtf.zip[Fruchtfolgeflächen-Datensatz]. Zuerst habe ich nur die einzelnen Objekte geprüft (`--singlePass`). Das hat zur Folge, dass die AREA-Prüfung nicht ausgeführt wird. Als Testrechner habe einen Hetzner-Cloud-Server verwendet.
+
+[cols="1,1"]
+|===
+|Variante |Dauer (mins:secs)
+
+|Standard 
+|1:33
+|PGO
+|1:00
+|PGO und G1GC
+|1:04
+|JVM
+|0:33
+|===
+
+Eine spürbare Verbesserung vor allem dank PGO ist sichtbar. Gegen die JVM-Variante haben die Native Images aber immer noch keine Chance. Wie sieht es aus, wenn ich das XTF komplett prüfe (also v.a. inklusive der AREA-Prüfung):
+
+[cols="1,1"]
+|===
+|Variante |Dauer (mins:secs)
+
+|Standard 
+|13:32
+|PGO
+|10:13
+|PGO und G1GC
+|8:19
+|JVM
+|6:08
+|===
+
+Die Unterschiede werden grösser. Die PGO+G1GC-Variante ist fünf Minuten schneller als die Standardvariante. Es gibt zwar immer noch eine Lücke zur reinen Java-Variante zu schliessen, aber absolut faszinierend was sich rausholen lässt mit einem anderen Garbage Collector und den PGO.
+
+Wie sieht es bei `ili2pg` aus? Die Datenbank läuft in einem Docker-Container. Die Prüfung des Datensatzes wurde ausgeschaltet (`--disableValidation`):
+
+[cols="1,1"]
+|===
+|Variante |Dauer (mins:secs)
+
+|Standard 
+|0:40
+|PGO
+|0:35
+|PGO und G1GC
+|0:19
+|JVM
+|0:20
+|===
+
+Es bräuchte wohl grössere Datensätze, um hier grössere Abstände zu sehen. Jedenfalls scheint PGO+G1GC auch hier gut mithalten zu können. Der Einfluss der Anwendung dürfte auf die reine Ausführungszeit geringer sein, da die Datenbank natürlich viel abarbeiten muss.
+
+Die _ilitools_ als Native Image werden immer interessanter und dank der frei verfügbaren Oracle GraalVM Distribution ist die Herstellung auch kein Problem mehr.

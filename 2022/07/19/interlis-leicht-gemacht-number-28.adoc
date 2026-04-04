@@ -1,0 +1,52 @@
+---
+= INTERLIS leicht gemacht #28 - INTERLIS-Modellablagen erstellen und pflegen
+Stefan Ziegler
+2022-07-19
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,Gradle,ilivalidator,ili2c
+:idprefix:
+---
+Hat man mehr als https://models.kgk-cgc.ch/[drei Modelle] in seiner INTERLIS-Modellablage (aka INTERLIS-Repo aka Repo) gelten zwei Regeln:
+
+1. Die Herstellung und das Pflegen der Modellablage muss automatisch passieren.
+2. Die für die Modellablage benötigten Informationen müssen aus den INTERLIS-Modellen kommen.
+
+Eine Lösung wie man beide Regeln befolgt, ist hier kurz vorgestellt:
+
+Eine Auslegeordnung zeigt, dass einzig die `ilimodels.xml`-Datei häufig ändert und natürlich die Modelle selbst. Die Grundidee ist, dass man einen Ordner bestimmt, wo alle Modelle gespeichert sind (gerne auch mit Unterordner) und daraus mit https://github.com/claeis/iox-ili/[vorhandenen Bibliotheken] und wenig eigenem Code die `ilimodels.xml`-Datei herstellt. Wir haben ein https://plugins.gradle.org/plugin/ch.so.agi.interlis-repository-creator[Gradle-Plugin] geschrieben, damit wir das Herstellen sauber in einem https://gradle.org/[Gradle-Build] einbetten können und mit anderen atomaren Prozessschritten verknüpfen können. Der https://github.com/sogis/interlis-repository-creator/blob/master/src/main/java/ch/so/agi/tasks/InterlisRepositoryCreator.java[Code] für das Herstellen ist simpel und entspricht dem Schreiben einer XTF-Datei mit einem https://github.com/claeis/iox-ili/blob/master/src/main/java/ch/interlis/iom_j/xtf/XtfWriter.java[XtfWriter]. Der minimale Gradle-Task für das Herstellen der `ilimodels.xml`-Datei sieht so aus:
+
+[source,java,linenums]
+----
+plugins {
+    id "ch.so.agi.interlis-repository-creator" version "1.3.17"
+}
+
+import ch.so.agi.tasks.InterlisRepositoryCreator
+
+task createIliModels(type: InterlisRepositoryCreator) {
+    modelsDir = file("models/")
+    dataFile = "ilimodels.xml"
+}
+----
+
+Diese paar Zeilen speichert man in einer `build.gradle`-Datei und mit einem `gradle`-Aufruf in dem Verzeichnis, wo die `build.gradle`-Datei gespeichert ist, wird die `ilimodels.xml`-Datei erstellt. Es werden alle Modelle berücksichtigt, die im Unterverzeichnis `models` vorliegen. Es gibt zusätzliche https://github.com/sogis/interlis-repository-creator/blob/master/README.md[Optionen]:
+
+- `repoModelName`: Entweder `IliRepository09` oder `IliRepository20`
+- `modelRepos`: Modellablagen, die beim Kompilieren der eigenen Modelle verwendet werden sollen.
+- `technicalContact`: Der technische Kontakt, der in der `ilimodels.xml`-Datei bei den Modell erscheinen soll, falls es kein gleichlautendes Metaattribut im Modell gibt.
+- `ilismeta`: Wird `ilismeta=true` gesetzt, wird zum Modell zusätzlich die `IlisMeta07`-Datei erstellt.
+
+Die `ilimodels.xml`-Datei ist auch eine INTERLIS-Transferdatei. Das zugrundeliegende Modell ist sehr tolerant, d.h. es sind nur wenige Attribute nicht optional. Es muss einzig der Namen, die Version und ein relativer Pfad auf die Modell-Datei vorhanden sein. Alle übrigen Attribute sind optional. Diese drei Pflichtattribute ergeben sich aus dem Modell resp. aus der Modelldatei selber. Die MD5-Checksumme kann man ebenfalls aus der Datei berechnen lassen. Andere interessante Attribute lassen sich nicht mehr automatisch ableiten. Einige dieser Attribute kann man sinnvollerweise als Metaattribute im Modell erfassen. Seit https://github.com/claeis/umleditor/commit/f6dabd413e77f6f4a5ef4dfa27b124b8b592bc4a[kurzem] kann man im https://downloads.interlis.ch/umleditor/umleditor-3.9.0.zip[_INTERLIS-UML-Editor_] für jedes Element beliebige Metaattribute erfassen, was diese Arbeit enorm erleichtert. So kann man z.B. das Metaattribut `shortDescription` im Modell erfassen und diese Information in die `ilimodels.xml`-Datei schreiben lassen. Nach diesem Prinzip funktioniert unser Gradle-Plugin. Neben `shortDescription` werden auch die Metaattribute `Title`, `Issuer`, `technicalContact` und `furtherInformation` - falls vorhanden - berücksichtigt. Für die letzten drei gab es im INTERLIS-UML-Editor bereits eine speziellen Eintrag zum Erfassen. Aus diesem Grund dürften diese in vielen Fällen vorhanden sein.
+
+Früher hätte man die `ilimodels.xml`-Datei und die Modelle mit FTP gleich in die Produktion kopiert. Machen wir natürlich nicht mehr, sondern wir erstellen ein https://github.com/sogis/sogis-interlis-repository/blob/master/Dockerfile[Dockerimage] auf Basis von https://nginx.org/[nginx]. Ist das Dockerimage erstellt, können wir einen Container starten und die Modellablage mit dem INTERLIS-Compiler prüfen (`--check-repo-ilis`). 
+
+Dieser gesamte Prozess (Herstellung, Prüfung, Image in Docker-Registry pushen) wird mit https://github.com/sogis/sogis-interlis-repository/blob/master/build.gradle[Gradle gemacht]. Aus diesem Grund haben wir das Gradle-Plugin für die Herstellung der `ilimodels.xml`-Datei geschrieben. Wäre es z.B. Maven, müsste man ein Maven-Plugin schreiben etc. Der Prozess kann lokal ausgeführt werden oder mittels https://github.com/sogis/sogis-interlis-repository/blob/master/.github/workflows/main.yml[Github-Action]. Womit wir mehr oder weniger am Ende angelangt sind: Die Herstellung und Pflege ist automatisiert und das Wissen zum Abfüllen der `ilimodels.xml`-Datei stammt aus den Modellen. 
+
+Die INTERLIS-Modellablage ist die einzige Anwendung, welche bei uns automatisch in die Produktionsumgebung deployed wird. Notfalls muss man ein Rollback ausführen, wenn man merkt, dass trotz der Tests etwas schief gelaufen ist. Zudem sollte man sich gut überlagen, ob man sich bei kritischen Prozessen auf externe Dienste (unnötigerweise) verlassen will und nicht einfach die benötigten Modelle zu seinem Prozess kopiert. Klammerbemerkung: Oder man macht in seiner Organisation einen INTERLIS-Modellablagen-Mirror, der die externen Ablagen regelmässig spiegelt. 
+
+Jedenfalls kann jeder Mitarbeiter bei uns, der in seiner Arbeit gerade etwas mit einem INTERLIS-Datenmodell macht, höchst effizient durcharbeiten und muss nicht zuerst zu einem Ops-Menschen gehen, um das Modell in der Ablage verfügbar zu machen.
+
+PS: Es gibt in https://geo.so.ch/models/[unserer Modellablage] noch ein kleines Goodie. Die https://geo.so.ch/models/ilimodels.xsl[_ilimodels.xsl_]-Datei sorgt dafür, dass die `ilimodels.xml`-Datei automatisch vom Browser mittels XSLT in eine https://geo.so.ch/models/ilimodels.xml[HTML-Seite] gerendert wird. 
+
+Oh und wenn ich mir die wichtigste und bekannteste INTERLIS-Modellablage so anschaue, scheint mir das arg kompliziert zu sein. Da wird sehr viel mit Javascript gelöst. Und das Witzigste: es scheint pro Unterordner (also plusminus pro Bundestelle) eine beinahe identische Javascript-Datei zu geben: https://models.geo.admin.ch/ARE/files/js/list_are.js[ARE] vs. https://models.geo.admin.ch/V_D/files/js/list_vd.js[V+D]. So auf ersten Blick unterscheiden sich diese Dateien nur in einem Wort: `var S3B_ROOT_DIR = 'ARE';` vs `var S3B_ROOT_DIR = 'V_D';` Welcome to maintainance hell...

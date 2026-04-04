@@ -1,0 +1,84 @@
+---
+= ÖREB-Kataster richtig gemacht #14 - A quick look aufs PDF
+Stefan Ziegler
+2023-01-18
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: ÖREB,ÖREB-Kataster,FOP,Apache FOP,PDF
+:idprefix:
+---
+Ok, schauen wir noch ein bisschen die PDF (aka statischer Auszug) an. Sicher nicht die systemkritischste Komponente. Aber man will einen einheitlichen Auftritt und die Frage ist, kriegt man ihn?
+
+Ich habe mich auf Dinge beschränkt, die einem mehr oder weniger direkt ins Auge springen. Bei einigen dieser Dinge ist die Frage wie man es formal nachprüfen kann. Mich dünkt z.B. die Schrift an einer Stelle zu gross. Und nun? Strichlupe? Ich habe mich für den Weg via Import in https://inkscape.org/[Inkscape] entschieden. Inkscape hat einen brauchbaren PDF-Import und Texte bleiben als Texte erhalten. Weil ich nicht weiss, wie gut und korrekt dieser letzten Endes ist, bleibt natürlich eine gewisse Unsicherheit.
+
+Ich habe die Analysen nach ÖREB-PDF-Generator zu gruppieren versucht. In der Hoffnung, dass die Gruppierung stimmt. Verwendet ein Kanton Generator X, gelten die Aussagen oftmals auch für einen anderen Kanton, der denselben Generator einsetzt.
+
+Neben den rein visuellen Dingen, habe ich die Konformität des verlangten PDF-Formates _versucht_ zu überprüfen. Die Weisung verlangt, dass das PDF entweder ein PDF/A-1 oder PDF/A-2a ist. Die Überprüfung ist leider nicht ganz trivial. https://de.wikipedia.org/wiki/PDF/A[Wikipedia] beschreibt das Problem sehr gut: &laquo;Eine Validierung von gültigem PDF/A ist über entsprechende Prüfwerkzeuge möglich (siehe Weblinks). Diese Software-Tools sind sich jedoch häufig uneinig darüber, ob eine erzeugte Datei entsprechend PDF/A gültig ist. Der Grund dafür ist, dass die zugrundeliegenden Normen unterschiedlich interpretiert werden.&raquo; Ich habe https://avepdf.com/de/pdfa-validation[zwei] https://www.slub-dresden.de/veroeffentlichen/open-access-publizieren/pdfa-erstellung/slub-pdfa-validator?tx_slubpdfavalidator_pdfavalidator%5Baction%5D=show&tx_slubpdfavalidator_pdfavalidator%5Bcontroller%5D=Validator&cHash=6d6ea1dc278612daa71841856e34536b[Online-Validatoren] verwendet.
+
+**pyramid-oereb (mapfish print)**
+ 
+Als erstes fällt auf, dass das Gemeindewappen mit dem Gemeindenamen ergänzt wird. Meines Erachtens steht nichts davon in der Weisung. Und weil auf dem Titelblatt explizit die Gemeinde aufgelistet wird, finde ich das mindestens überflüssig.
+
+Auf der Titelseite ist die erste Inhaltszeile von &laquo;Katasterverantwortliche Stelle&raquo; nicht bündig und ist zu Nahe am der Trennlinie.
+
+Auf der zweiten Seite (dem Inhaltsverzeichnis) stimmt die Grösse des Textes nicht. Die jeweiligen Titel sind in der Schriftgrösse 8pt, die Auflistung der Themen in Schriftgrösse 9pt. Die Schriftgrösse der Themen muss aber 8pt sein. Die Ergänzung des Themas mit &laquo;(Rechtsgültig)&raquo; sollte nicht sein. Nur &laquo;nicht-rechtsgültige&raquo; müssen mit dem Rechtsstatus in Klammer ergänzt werden.
+
+Die Beschreibung eines Typs auf den einzelnen ÖREB-Seiten ist zu gross: sie darf nur 8pt gross ein und nicht 9pt. Es scheint auch nicht sauber vertikal zentriert zu sein.
+
+Der Kanton Zug verwendet auch Mapfish Print aber lustigerweise liegt das PDF in der Version 1.7 vor, was nicht PDF/A-1-konform, jedoch PDF/A-2-konform sein könnte.
+
+Das PDF ist gemäss beiden Validatoren nicht formatkonform.
+
+**pdf4oereb**
+
+Wir im Kanton Solothurn verwenden eine XSL/XSL-FO-Tranformation bei der Herstellung des PDF aus dem XML. Was mich nicht ganz korrekt dünkt, ist der eigentliche Namen des Inhaltsverzeichnis-Eintrags eines Themas. Gemäss Weisung ist die Logik: &laquo;Thema: Subthema&raquo;. Bei uns steht nur der Name des Subthemas. Ich frage mich, ob sich hier DATA-Extract und PDF-Weisung nicht widersprechen. Entweder wir benennen unsere Subthemen um oder man müsste im XML noch irgendwo den sprechenden Namen des Themas verwalten. Oder man müsste die ganze Table of Contents- vs. Themen-Geschichte bei den einzelnen ÖREB anders leben. Aber wie? Ist wohl wirklich nicht ganz widerspruchsfrei.
+
+Das PDF validert mit beiden Validatoren gegen PDF/A-1a.
+
+**Kantone NW, OW, UR**
+
+Die drei PDF dünken mich sehr ähnlich, es gibt aber einige Unterschiede. 
+
+Im Kanton Uri weisen die Gemeindewappen den Gemeindenamen auf. Die Symbole sind zu klein. Im Kanton Uri noch kleiner als z.B. im Kanton NW. Die Trennlinie ist zu breit (1pt statt 0.2pt). Der Abstanz zwischen Bild und Auflistung der Typen ist zu klein. Zwischen dem Anteil und dem Prozentzeichen darf es keinen Leerschlag geben.
+
+Die Schriftgrösse im Inhaltsverzeichnis ist zu klein. Sie darf nicht 6pt sein, sondern muss 8pt sein.
+
+Das PDF ist gemäss beiden Validatoren nicht formatkonform.
+
+**Kanton Zürich**
+
+Interessanterweise kann ich das PDF nicht gleich gut wie andere in Inkscape importieren. Es fehlen die Texte (was aber noch rein gar nichts über die Qualität des PDF aussagt). Was jedoch sofort auffällt ist, dass im Kanton Zürich praktisch alles kursiv geschrieben ist. Warum?
+
+Bei den einzelnen Typen steht manchmal ein Asterix hinter den Quadratmeter und Prozent. Mir auch nicht klar. Ebenfalls steht ein überflüssiger Leerschlag zwischen Anteil und dem Prozentzeichen.
+
+Die Liste auf der letzten Seite bei &laquo;Begriffe und Abkürzungen&raquo; stammt wohl noch aus der ersten Version. Sie müsste umfangreicher und länger sein.
+
+Das PDF ist gemäss beiden Validatoren nicht formatkonform.
+
+**Kanton Wallis**
+
+Der Kanton Wallis hat noch einige Version-1-Restanzen: Der Titel &laquo;Allfällige Eigentumsbeschränkungen, zu denen noch keine Daten vorhanden sind&raquo; ist nicht mehr korrekt. Ebenso gibt es keine vollständige Legende mehr. Die Abstände zwischen verschiedenen Elementen stimmt oftmals nicht.
+
+Das ÖREB-Katasterlogo ist nicht rechtsbündig und verzerrt.
+
+Was mich ein wenig irritiert ist, dass man anscheinend die falsche Farbe der Links nicht erkennt, resp. noch niemand erkannt hat. Auch die Schriftart  ist nicht korrekt. Bei den Links wird anstelle Cadastra Helvetica verwendet.
+
+Das PDF ist gemäss beiden Validatoren nicht formatkonform.
+
+**Kanton Luzern**
+
+Der Kanton Luzern verwendet ebenfalls eine eigene Lösung. 
+
+Auf der Titelseite fehlt der Stand der amtlichen Vermessung. Die Schriften sind zu gross: 8.5pt statt 8pt. Im Inhaltsverzeichnis wird die alte Bezeichung &laquo;Allfällige...&raquo; verwendet. Das Gemeindelogo weist den Gemeindenamen auf.
+
+Bei den einzelnen ÖREB-Seiten fehlt der kleine Untertitel, der Auskunft über den Rechtsstatus liefert. Die Legende ist &laquo;komisch&raquo; aufgebaut. Irgendwie scheint es Unterkapitel zu geben, z.B. gibt es beim Zonenplan in der Legend das Unterkapitel &laquo;Grundnutzung&raquo; und &laquo;Überlagerungen&raquo;. Der eigentliche Legendentext, z.B. &laquo;Zone für öffentliche Zwecke&raquo; wird ebenfalls mit Subkontext versehen (&laquo;Zonentyp Gemeinde: Zone für öffentliche Zwecke&raquo;). Scheint mir nicht der Weisung zu entsprechen. Die Einrückungen der Links auf die Dokumente fehlt und deren Farbe ist nicht korrekt. Die weiteren Informationen und Hinweise folgen fälschlicherweise nach den zuständigen Stellen. Sie sollten vor den zuständigen Stellen gelistet werden.
+
+Das PDF ist gemäss beiden Validatoren nicht formatkonform.
+
+**Fazit**
+
+Wahrlich kein Weltuntergang aber irgendwie, auf einem anderen Level, trotzdem leicht verstörend. Wir können es uns leisten mindestens 5 Mal ein Werkzeug für den identischen Arbeitsschritt zu bauen (dafür aber keines wirklich korrekt). Zu viel Geld? Zu viele Programmierer, die sich verwirklichen wollen? Zu viele Leute, die reinreden, was alles konfigurierbar sein muss? Fehlanreize? Ich weiss es nicht. 
+
+**Nachtrag 2023-01-23**
+
+Ich habe eine https://verapdf.org/[Java-Bibliothek] gefunden, die PDF/A-Dateien validiert. Auf Basis dieser Bibliothek habe ich einen zusätzlichen Check im https://github.com/edigonzales/oereb-cts[ÖREB-Kataster-Validierungstool] erstellt. Erfreulicherweise validiert das PDF der Kantone https://monitoring.oereb.services/details/extract/NW[Nidwalden] und Obwalden. Uri interessanterweise nicht, auch wenn ich immer noch denke, dass sie mit der gleichen Software hergestellt werden. Leider werden wohl die https://monitoring.oereb.services/details/extract/BL[pyramid-oereb-Kantone] ein Problem https://github.com/openoereb/pyramid_oereb/issues/876#issuecomment-884716001[bekommen]. Wobei mir nicht ganz klar ist, ob es im verlinkten Ticket nur um die Transparenz in den Symbolen der Bundesdaten geht oder um ein gröberes Problem bei der eingesetzten Lösung und was das https://github.com/openoereb/pyramid_oereb/issues/876#issuecomment-1353127808[Telefongespräch] genau &laquo;resolved&raquo; hat. PDF/A bleibt aus Anbietersicht unbefriedigend: Support in Libs nicht so toll und Prüfung des Resultates nicht gerade Glückssache aber auch nicht non-trivial. Ich verstehe, dass man PDF/A anbieten will aber anscheinend überfordert diese Anforderung das Gesamtsystem ÖREB-Kataster Schweiz.

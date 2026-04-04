@@ -1,0 +1,161 @@
+---
+= Interlis leicht gemacht #16
+Stefan Ziegler
+2017-04-24
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,ilivalidator,GWR,BFS
+:idprefix:
+---
+Zum Wochenstart ein klein wenig https://github.com/claeis/ilivalidator[ilivalidator]-Magie. Im http://blog.sogeo.services/blog/2017/04/10/interlis-leicht-gemacht-number-15.html[vorangegangen Beitrag] habe ich gezeigt, wie man sogenannte Custom Functions in Java programmiert, um beliebige Validierungen zu implementieren. Die dabei resultierende INTERLIS-Funktion war nicht viel mehr als eine Substring-Funktion. Also nichts Besonderes. Häufig will man aber seine Daten mit Referenzdaten, die irgendwo anders gespeichert sind, vergleichen.
+
+In diesem Beispiel - auch weil es momentan so richtig https://www.cadastre.ch/de/home.detail.news.html/2017/AV-Express2.html[trendy] ist - vergleiche ich Daten der amtlichen Vermessung mit dem GWR. Genauer: Ist der EGID aus den Daten der amtlichen Vermessung im GWR enthalten. Für die Daten der amtlichen Vermessung verwende ich das http://models.geo.admin.ch/V_D/MOpublic95_ili2_v1.3.ili[MOpublic-Datenmodell]. Hauptgrund ist, dass Custom Functions resp. die Definition von eigenen Constraints mit INTERLIS 1 mit `ilivalidator` nicht funktionieren. Für die GWR-Referenz verwende ich den https://api3.geo.admin.ch/services/sdiservices.html#find[&laquo;find&raquo;-Restservice] der BGDI. Es ist kein spezifischer Suchdienst für EGID/EDID im GWR, sondern ein Suchdienst für Datensätze, die in der BGDI publiziert sind. Praktischerweise gibt es ein `contains`-Parameter. Mittels diesem Parameter lässt sich steuern, ob eine exakte Suche durchgeführt werden soll oder nicht. In unserem Fall sind wir an einer exakten Suche interessiert. Falls die Suche in unserem Fall also genau ein Resultat liefert, gibt es den EGID aus den Daten der amtlichen Vermessung im GWR. Soviel zur Logik der Custom Function.
+
+Zuerst definieren müssen wir das http://blog.sogeo.services/data/interlis-leicht-gemacht-number-16/MOpublic_Check.ili[Check-Modell] mit den Views erstellen:
+
+[source,java,linenums]
+----
+INTERLIS 2.3;
+
+CONTRACTED MODEL MOpublic95_ili2_v13_Check (en) AT "http://sogeo.services"
+  VERSION "2017-04-14" =
+  IMPORTS MOpublic95_ili2_v13;
+  IMPORTS SO_FunctionsExt;
+   
+  VIEW TOPIC Land_cover =
+  DEPENDS ON MOpublic95_ili2_v13.Land_cover;
+  
+  	VIEW v_LCSurface
+    	PROJECTION OF MOpublic95_ili2_v13.Land_cover.LCSurface;
+    =
+      ALL OF LCSurface;
+        
+      !!@ name = LCSurface_Egid
+      !!@ ilivalid.msg = "EGID {RegBL_EGID} wurde im GWR nicht gefunden."            
+      MANDATORY CONSTRAINT SO_FunctionsExt.check4GWR(RegBL_EGID);
+      
+    END v_LCSurface;
+    
+END Land_cover;
+    
+END MOpublic95_ili2_v13_Check.
+----
+
+Die Funktion `SO_FunctionsExt.check4GWR` muss in unserem http://blog.sogeo.services/data/interlis-leicht-gemacht-number-16/SO_FunctionsExt.ili[Funktions-Modell] deklariert werden:
+
+[source,java,linenums]
+----
+INTERLIS 2.3;
+
+CONTRACTED MODEL SO_FunctionsExt (en) AT "http://sogeo.services"
+  VERSION "2017-04-14" =
+
+  FUNCTION check4GWR (egid: NUMERIC): BOOLEAN;
+
+END SO_FunctionsExt.
+----
+
+Zu guter Letzt ist die Custom Function in Java zu implementieren:
+
+[source,java,linenums]
+----
+package org.catais.ilivalidator.ext;
+
+import ch.ehi.basics.logging.EhiLogger;
+import ch.ehi.basics.settings.Settings;
+import ch.interlis.ili2c.metamodel.NumericType;
+import ch.interlis.ili2c.metamodel.TransferDescription;
+import ch.interlis.iom.IomObject;
+import ch.interlis.iox.IoxValidationConfig;
+import ch.interlis.iox_j.logging.LogEventFactory;
+import ch.interlis.iox_j.validator.InterlisFunction;
+import ch.interlis.iox_j.validator.ObjectPool;
+import ch.interlis.iox_j.validator.Value;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+
+public class Check4GWRIoxPlugin implements InterlisFunction {
+    @Override
+    public void init(TransferDescription td, Settings settings, IoxValidationConfig validationConfig, ObjectPool objectPool, LogEventFactory logEventFactory) {
+            logger = logEventFactory;
+    }
+
+    @Override
+    public Value evaluate(String validationKind, String usageScope, IomObject mainObj, Value[] args) {
+        if (args[0].skipEvaluation()) {
+            return args[0];
+        }
+        if (args[0].isUndefined()) {
+            return Value.createSkipEvaluation();
+        }
+        String egidString = args[0].getValue();
+
+        // OMG: SSLHandshakeExceptions all over.
+        // Do not use HTTPS!
+        CloseableHttpClient httpClient = HttpClients.createDefault();
+
+        try {
+            HttpGet getRequest = new HttpGet(
+                    "http://api3.geo.admin.ch/rest/services/api/MapServer/find?layer=ch.bfs.gebaeude_wohnungs_register&searchText="
+                            + egidString +"&searchField=egid&returnGeometry=false&contains=false");
+            getRequest.addHeader("accept", "application/json");
+
+            HttpResponse response = httpClient.execute(getRequest);
+
+            if (response.getStatusLine().getStatusCode() != 200) {
+                throw new RuntimeException("Failed : HTTP error code : "
+                        + response.getStatusLine().getStatusCode());
+            }
+
+            BufferedReader br = new BufferedReader(
+                    new InputStreamReader((response.getEntity().getContent())));
+
+            String output;
+            String jsonString = "";
+            while ((output = br.readLine()) != null) {
+                jsonString += output;
+            }
+
+            JSONObject jsonObject = new JSONObject(jsonString);
+            JSONArray resultsArray = jsonObject.getJSONArray("results");
+
+            if (resultsArray.length() == 1) {
+                return new Value(true);
+            } else {
+                return new Value(false);
+            }
+
+        } catch (IOException e) {
+            logger.addEvent(logger.logErrorMsg(e.getMessage()));
+            return new Value(false);
+        }
+    }
+
+    @Override
+    public String getQualifiedIliName() {
+        return "SO_FunctionsExt.check4GWR";
+    }
+}
+----
+
+Keine Rocket Science. Das Interessante passiert in den Zeilen 43 bis circa 68. Für jeden EGID aus der Klasse `LCSurface` wird ein GET-Request gemacht. Wird der EGID im Datensatz der BGDI / des GWR gefunden, wird `true` zurückgeliefert. Und funktionieren tut es tadellos. Vielleicht aber nicht nicht die performanteste Art den EGID in den Daten der amtlichen Vermessung zu validieren.
+
+Weil wir in diesem Fall nicht nur Standard-Java-Bibliotheken verwenden (json und http) müssen diese auch beim Validieren in `ilivalidator` verfügbar sein. Momentan kopiere ich diese in ein Verzeichnis von `ilivalidator` (z.B. `libs-ext/`). Der Aufruf ist in nun klein wenig https://github.com/claeis/ilivalidator/issues/52[komplizierter]:
+
+[source,java,linenums]
+----
+java -cp  '../apps/ilivalidator/ilivalidator.jar:../apps/ilivalidator/libs/*:../apps/ilivalidator/plugins/*' org.interlis2.validator.Main --config ../examples/06/mopublic.toml  ../examples/06/mopublic_errors.xtf
+----
+
+Die gefundenen Fehler können z.B. zusätzlich in eine http://models.interlis.ch/models/tools/IliVErrors.ili[XTF-Errordatei] geschrieben werden und anschliessend mit http://www.eisenhutinformatik.ch/interlis/ili2pg/[`ili2pg`] in die Datenbank importiert und auf https://map.geo.admin.ch[map.geo.admin.ch] visualisiert werden. Einfacher geht es nicht.
+
+Das Beispiel ist eines von vielen eines vor kurzem gehaltenen https://git.sogeo.services/stefan/ilivalidator-demo-2017-04-20[ilivalidator-Workshops].

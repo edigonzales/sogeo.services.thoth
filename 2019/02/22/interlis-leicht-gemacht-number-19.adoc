@@ -1,0 +1,100 @@
+---
+= INTERLIS leicht gemacht #19 - Modellablage automatisieren
+Stefan Ziegler
+2019-02-22
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,Modellablage,Repository,Gradle,GRETL
+:idprefix:
+---
+Es ging relativ lange bis ich überhaupt geschnallt habe, dass die http://models.interlis.ch/ModelRepository.pdf[INTERLIS-Modellablage]  auch eine INTERLIS-Transferdatei mit dazugehörigem INTERLIS-Modell ist. Im Grunde genommen sind es zwei Modelle (`IliRepository09` und `IliSite09`) und zwei Transferdateien, wobei letztere in der Regel kaum nachgeführt werden muss. Bei https://agi.so.ch[uns] ist diese Nachführung ein händischer Prozess:
+
+- Neues Modell in einen Filesystem-Ordner auf einem Server kopieren.
+- Anpassen der `ilimodels.xml`-Datei inkl. Berechnen md5-Prüfsumme der neuen Modell-Datei.
+- Überprüfen der Dateirechte auf dem Filesystem, damit die Dateien später für andere Mitarbeiter und den Webserver lesbar bleiben
+- Validieren der `ilimodels.xml`-Datei mit https://github.com/claeis/ilivalidator[`ilivalidator`].
+- Prüfen der INTERLIS-Modellablage mit `ili2c` und dem `--check-repo-ilis`-Befehl.
+- Ein Nacht warten bis der Filesystem-Ordner in die globale Zone kopiert wurde. Erst dann steht das Modell im Internet allen zur Verfügung.
+
+Bei diesem Nachführungsprozess nervt fast alles. Zuviele manuelle Prozesse, furchtbares Gefrickel mit den Dateirechten, eine Nacht warten, bis wirklich verfügbar...
+
+Eine erste Idee war den Nachführungsprozess &laquo;irgendwie&raquo; mit https://qgis.org[QGIS] und https://github.com/claeis/ili2db[`ili2pg`] zu machen. Ich hätte alles in einem GitHub-Repository abgelegt, d.h. sowohl Modelle wie auch QGIS und Datenbank (mit https://www.vagrantup.com/[Vagrant]). Schien schlussendlich auch wieder kompliziert. Überhaupt war da plötzlich die Frage, ob man menschlichen Input braucht, ausser das Modell irgendwo hinzukopieren? Es stellte sich heraus, dass es unter gewissen Umständen keinen manuellen Eingriff braucht. Was heisst das?
+
+Die erste mir http://models.geo.admin.ch[bekannte Modellablage] hat die TID in der `ilimodels.xml`-Datei stark http://models.geo.admin.ch/ilimodels.xml[formalisiert]. Jedes Amt bekommt einen eigenen Range. Dieses Vorgehen haben wir bei der Einführung http://geo.so.ch/models[unserer Modellablage] übernommen. Will man das nicht, ist die Automatisierung schon wieder einfacher geworden.
+
+Einige optionale Attribute in der `ilimodels.xml`-Datei ergeben sich nicht zwingend oder direkt aus dem eigentlichen Modell. Oftmals könnte man sich mit INTERLIS-Metaattributen behelfen. Bedingt aber, dass diese für jedes Modell sauber erfasst sind. Die gemäss `IliRepository09`-Modell https://github.com/claeis/ili2c/blob/master/standard/IliRepository09.ili[zwingend notwendigen Attribute] ergeben sich jedoch problemlos aus den zu publizierenden Modellen selber.
+
+Zwischenfazit: Es braucht keine menschlichen und manuellen Eingriffe für das Erstellen der `ilimodels.xml`-Datei, wenn man Zugriff auf die zu publizierenden INTERLIS-Modelle hat. Das führt zur Idee, dass man die INTERLIS-Modelle in einem https://github.com/sogis/sogis-interlis-repository[Github-Repository] verwalten kann. Bei Änderungen im Github-Repository läuft eine CI/CD-Pipeline ab, welche die INTERLIS-Modellablage mindestens in eine Testumgebung deployed. Sowas in der Art wäre schön.
+
+Zuerst braucht es etwas, dass aus einem Haufen von INTERLIS-Modellen die `ilimodels.xml`-Datei erstellt. Das scheint mit http://www.eisenhutinformatik.ch/iox-ili/[_iox-ili_] kein Hexenwerk zu sein, sondern ein paar Zeilen Java-Code. Diese https://github.com/sogis/gretl/blob/master/gretl/src/main/java/ch/so/agi/gretl/steps/IliRepositorizerStep.java[paar Zeilen Java-Code] packt man in einen https://docs.gradle.org/current/userguide/custom_tasks.html[Gradle-Custom-Task] und schon kann man mit https://github.com/sogis/gretl[GRETL] die `ilimodels-xml`-Datei erstellen. D.h. das Erstellen der `ilimodels.xml`-Datei wird losgetriggert durch einen Commit in das Github-Repository und mit einem Gradle-Build-Job, der das https://plugins.gradle.org/plugin/ch.so.agi.gretl[GRETL-Plugin] verwendet, ausgeführt. Als CI-Werkzeug wird https://travis-ci.org[Travis CI] verwendet. Ginge aber auch problemlos mit z.B. https://jenkins.io/[Jenkins].
+
+Als GRETL-Task ist die Herstellung der `ilimodels.xml`-Datei ein blosses Konfigurieren:
+
+[source,groovy,linenums]
+----
+task createIliModelsXml(type: IliRepositorizer) {
+    description = "Create ilimodels.xml file."
+    modelsDir = file("models/")
+    dataFile = "ilimodels.xml"
+}
+----
+
+Die entstandene Datei kann man mit einem ilivalidator-Task prüfen:
+[source,groovy,linenums]
+----
+task validateIliModelsXml(type: IliValidator) {
+    description = "Validate ilimodels.xml file."
+    dataFiles = ["ilimodels.xml"]
+    logFile = "ilivalidator.log"
+}
+----
+
+Aber: Ich will nicht bloss das Erstellen der Datei automatisieren, sondern auch das Deployment schneller und effizienter gestalten und mich nicht wieder mit Dateirechten herumschlagen müssen. Warum also nicht die INTERLIS-Modelle und die `ilimodels.xml`- und `ilisite.xml`-Datei in ein Docker-Image brennen und mit `nginx` bereitstellen. Das Docker-Image kann in der Openshift-Infrastruktur des Kantons deployed werden. In Openshift kann man https://blog.openshift.com/image-streams-faq/[Image Streams als &laquo;scheduled&raquo; taggen]. In diesem Fall wird alle z.B. 15 Minuten geprüft, ob sich im Image in der Registry was geändert hat. Falls ja, wird das Image neu deployed. 
+
+Das Erstellen des Docker-Images kann man entweder mit einem Shell-Skript automatisieren oder auch direkt im Gradle Build-File mit einem Plugin steuern. Das https://github.com/sogis/sogis-interlis-repository/blob/master/Dockerfile[Dockerfile] ist einmalig zu schreiben. Dieses ändert sich in der Regel nicht bei einer Änderung von Modellen, ausser wenn https://github.com/sogis/sogis-interlis-repository/blob/master/Dockerfile#L11[neue Ordner] reinkopiert werden müssen.
+
+Bevor ich das hergestellte Image in die Docker-Registry hochladen kann/darf, muss ich die darin enthaltene INTERLIS-Modellablage prüfen. D.h. ein Docker-Container muss gestartet werden und mit `ili2c` die Modellablage geprüft werden. Den Docker-Container hochfahren, mache ich ebenfalls mit Gradle.
+
+Wie soll man den `ili2c`-Befehl für die Prüfung der Modellablage absetzen und wie das Ergebnis der Prüfung richtig interpretieren? Es bestünde natürlich auch hier die Möglichkeit einen eigenen Custom Task zu schreiben. Aber es geht einfacher: Gradle kennt den Task-Typ &laquo;JavaExec&raquo;. https://docs.gradle.org/current/dsl/org.gradle.api.tasks.JavaExec.html[Damit] lässt sich eine Java-Applikation (in einem neuen Prozess) starten. Die Java-Applikation (in unserem Fall `ili2c`) wird als Buildscript-Dependency definiert, damit sie automatisch herunterladen wird.
+
+Der eigentliche Task sieht wie folgt aus:
+[source,groovy,linenums]
+----
+task checkInterlisRepository(type: JavaExec) {
+    classpath = buildscript.configurations.classpath
+    main = 'ch.interlis.ili2c.Main'
+    args  "--check-repo-ilis", "http://localhost:8080"
+}
+----
+
+Simpel. Der Task wirft korrekterweise eine Fehlermeldung, wenn die Prüfung der INTERLIS-Modellablage nicht erfolgreich ist. Damit werden auch die nachfolgenden Gradle-Tasks nicht ausgeführt (d.h. das Hochladen in die Docker-Registry).
+
+Zum Ausprobieren:
+[source,groovy,linenums]
+----
+docker run -p 8080:8080 sogis/sogis-interlis-repository
+----
+
+Im Browser:
+[source,groovy,linenums]
+----
+localhost:8080
+----
+
+Bonus: Was ich momentan gerne mache, ist das Erstellen einer `version.txt`-Datei, die als statische Datei von einem Webserver (wenn er eh schon vorhanden ist) bereitgestellt wird. Damit sehe ich, ohne Einblick in Openshift etc. zu haben, ob die automatischen Deployments wirklich auch funktioniert haben. Der Task dazu ist:
+
+[source,groovy,linenums]
+----
+task versionTxt()  {
+    description = "Create a version.txt file with some information about the build."
+    outputs.upToDateWhen { false }
+    doLast {
+        new File("version.txt").text = """
+Version: $version
+Revision: ${Grgit.open(dir: '.').head().id}
+Buildtime: ${new SimpleDateFormat("dd-MM-yyyy HH:mm:ss").format(new Date())}
+Application-name: sogis-interlis-repository
+"""
+    }
+}
+----

@@ -1,0 +1,137 @@
+---
+= HTTP-Statuscode 206 - Parquet und DuckDB
+Stefan Ziegler
+2023-12-30
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: Statuscode, status, http, cloud, cloud native, geoparquet, parquet, DuckDB
+:idprefix:
+---
+Wie im vorangegangenen http://blog.sogeo.services/blog/2023/12/29/statuscode-206-letsgetstarted.html[Blogpost] aufgezeigt, wird WFS dank Cloud Native Formate für gewisse Anwendungsfälle ziemlich überflüssig. Die Frage ist, ob z.B. https://geoparquet.org/[GeoParquet] auch für Realtime-Datenanalysen, im einfachsten Fall für Filterabfragen, geeignet ist. Unter Filterabfragen verstehe ich sowas wie ein WMS-GetFeatureInfo-Request und/oder ein klassischer GIS-Nadelstich für Fachanwendungen mittels WFS/Featureservice. Als Abfragesprache eignet sich SQL und als Engine dazu https://duckdb.org/[DuckDB]. Gehen tut es natürlich schon, die Frage ist, ob es performant genug ist, ohne die GeoParquet-Datei lokal vorzuhalten. Weil (Geo)Parquet und DuckDB zusammen irgendwie Magie ist und momentan die Antwort auf fast jede Frage, erhoffte ich mir in brutaler Naivität natürlich eine ansprechende Performance. Dank guter https://duckdb.org/docs/extensions/spatial[Dokumentation] hat man die Syntax für die spezifischen Geokniffe schnell heraus:
+
+[source,sql,linenums]
+----
+SELECT
+    typ_kt
+FROM 
+    'https://stac.sogeo.services/files/test/nutzungsplanung_grundnutzung_v.parquet' AS grundnutzung
+WHERE 
+    ST_Intersects(ST_Point(2596651,1226670), ST_GeomFromWkb(grundnutzung.geometry))
+;
+----
+
+Die Abfrage dauert circa enttäuschende 7 Sekunden. Das entspricht mehr oder weniger der Downloadzeit der gesamten Parquet-Datei, was tatsächlich - gemäss Logdatei des Webservers - auch gemacht wurde: `Content-Range=[ "bytes 4-63990494/64006068" ]`. Nach professioneller Recherche (also Ausprobieren bis die Ohren wackeln) _glaube_ ich langsam ein gewisses Wissen davon zu haben, was hinter den Kulissen abgeht (vor allem auch Dank https://medium.com/radiant-earth-insights/the-admin-partitioned-geoparquet-distribution-59f0ca1c6d96[Chris Holmes Beitrag]) und wo man dran schrauben kann resp. muss, damit das schneller geht. Ob es dann tatsächlich einmal gleich schnell wie eine GetFeatureInfo-Abfrage wird, wage ich heute zu bezweiflen. Die GetFeatureInfo-Abfrage dauert bei uns für Grundnutzung und Grundstücke jeweils circa 200ms. Gemeinsam in einem Request circa 300ms. Es sind einfach andere Prinzipien mit anderen Rahmenbedingungen. Aber der Reihe nach. Am einfachsten bekommt man vielleicht ein Verständnis wie folgt:
+
+Was passiert, wenn ich einen einzelnen Record mit einer WHERE-Clause anfordere?
+
+[source,sql,linenums]
+----
+SELECT
+    t_ili_tid
+FROM 
+    'https://stac.sogeo.services/files/test/nutzungsplanung_grundnutzung_v.parquet' AS grundnutzung
+WHERE 
+    t_ili_tid = 'e9732511-dbe5-4625-98e1-535c47793fb8'
+;
+----
+
+Die Query dauert circa 0.5 Sekunden. Im Webserver-Log sehe ich vier Einträge. Der erste ist ein HEAD-Request. Die drei folgenden sind Range-Requests, wobei auf den ersten Blick nur der letzte ins Gewicht fällt. Sowohl bei der Antwortzeit wie auch bei der Datenmenge. Wie sieht es aus, wenn ich noch ein weiteres (Sach-)Attribut anfordere:
+
+[source,sql,linenums]
+----
+SELECT
+    t_ili_tid,
+    typ_kt
+FROM 
+    'https://stac.sogeo.services/files/test/nutzungsplanung_grundnutzung_v.parquet' AS grundnutzung
+WHERE 
+    t_ili_tid = 'e9732511-dbe5-4625-98e1-535c47793fb8'
+;
+----
+
+Die Query wird _nicht_ spürbar langsamer, im Logfile sieht man jedoch einen zusätzlichen Range-Request. Es ist also relevant, wie viele und welche Attribute man in der Query anfordert.
+
+Wenn ich nun noch das Geometrieattribut anfordere, dauert die Query aber wieder knapp 7 Sekunden:
+
+[source,sql,linenums]
+----
+SELECT
+    t_ili_tid,
+    geometry
+FROM 
+    'https://stac.sogeo.services/files/test/nutzungsplanung_grundnutzung_v.parquet' AS grundnutzung
+WHERE 
+    t_ili_tid = 'e9732511-dbe5-4625-98e1-535c47793fb8'
+;
+----
+
+Parquet-Dateien sind in row groups partitioniert. Gute Erklärung dazu in einem https://duckdb.org/2021/06/25/querying-parquet.html[DuckDB-Blogbeitrag]. Es müssen also mindestens alle row groups heruntergeladen werden, die meiner Query resp. den Filterkriterien entsprechen. Und so wie ich es mir nun zurecht gelegt habe, kann man innerhalb einer row groups die Attribute mittels Range-Request ansprechen. Darum gibt es bei der zweiten und dritten Query einen weiteren Range-Request (für das zweite Attribut). Die vorangegangen Range-Requests dienen dem Herunterladen der Metadaten (also v.a. Statistiken zu den row groups). Die Metadaten einer Parquet-Datei kann man in DuckDB anschauen:
+
+[source,sql,linenums]
+----
+SELECT 
+    * 
+FROM
+    parquet_metadata('https://stac.sogeo.services/files/test/nutzungsplanung_grundnutzung_v.parquet')
+;
+----
+
+In meiner Parquet-Datei gibt es genau eine row group (mit allen 37'731 Records drin). Interessant sind die beiden letzten Spalten, die den Speicherplatzbedarf der Attributwerte innerhalb der row group ausweist. Wenn ich mir die komprimierte Grösse des Attributes `t_ili_tid` anschaue (1'353'462), entspricht das exakt der Grösse einer Antwort eines Range-Requests (für `t_ili_tid`). Es müssen also zwingend bereits bei der einfachsten Query mit nur einem angeforderten Attribut 1.3MB Daten heruntergeladen werden. Wenn ich das Geometrieattribut anfordere, werden zusätzliche 61MB Daten runtergesaugt. 
+
+Nun gibt es die Möglichkeit die Daten innerhalb der Parquet-Datei in mehrere https://duckdb.org/docs/data/parquet/tips[mehrere row groups] aufzuteilen (resp. die Menge der Records einer row group zu definieren). Dann müsste nur noch die row group, die meine Geometrie enthält, heruntergeladen werden. Gesagt, getan (Achtung: siehe `..._bbox_v3.parquet`):
+
+[source,sql,linenums]
+----
+SELECT
+    t_ili_tid,
+    geometry
+FROM 
+    'https://stac.sogeo.services/files/test/nutzungsplanung_grundnutzung_v_bbox_v3.parquet' AS grundnutzung
+WHERE 
+    t_ili_tid = 'e9732511-dbe5-4625-98e1-535c47793fb8'
+;
+----
+
+In dieser Datei-Variante gibt es 18 row groups mit jeweils 2048 Records. Die Query dauert nicht mehr 7 Sekunden, sondern nur noch circa 900ms. Es werden aber 23 Requests losgeschickt und nicht mehr bloss 5 Requests wie mit der Original-Datei. DuckDB muss nun anhand der Metadaten/Statistik die passenden row groups finden. Was passiert wenn ich die allererste Query (den Nadelstich) mit dieser Datei ausführe? Es dauert genau gleich lang oder sogar noch ein klein wenig länger. Es werden 27 Requests abgesetzt und weil die Geometriespalte keine Statistiken ausweist, muss DuckDB sämtliche Geometrie-row groups herunterladen und die Intersects-Bedingung prüfen. Das ist Stand heute mit GeoParquet Version 1.0.0 einfach so. Auf der https://github.com/opengeospatial/geoparquet[Roadmap] für Version 1.1.0 stehen glücklicherweise Dinge wie &laquo;spatial optimization, spatial indices and spatial partitioning to improve performance reading spatial subsets&raquo;. 
+
+Man kann sich selber eine BBOX-Spalte basteln und diese in die WHERE-Clause miteinbeziehen. Das sind dann circa so aus:
+
+[source,sql,linenums]
+----
+SELECT
+    t_ili_tid
+FROM 
+    'https://stac.sogeo.services/files/test/nutzungsplanung_grundnutzung_v_bbox_v3.parquet' AS grundnutzung
+WHERE 
+    bbox.minx < 2596651 AND bbox.maxx > 2596651 AND bbox.miny < 1226670 AND bbox.maxy > 1226670
+;
+----
+
+Das performt solange man die Geometriespalte _nicht_ anfordert. Ohne Geometriespalte circa 700ms, mit Geometriespalte 7.5 Sekunden. Das Intersects brauche ich schon gar nicht mehr zu versuchen anzuhängen. Mit Geometriespalte sind es zwar &laquo;bloss&raquo; 24 Requests, die gemacht werden müssen aber es sind teilweise auch grössere Antworten dabei, die DuckDB zuerst runterladen muss. Es wird somit auch ein Abwägen sein zwischen der Menge von row groups und der Grösse der row groups. Weniger row groups bedeuten weniger Requests aber grössere Downloads (und umgekehrt). Und es ist natürlich ein Unterschied zwischen 2'048 Punkten oder 2'048 Flächen (mit tausenden Vertexpunkten) in einer row group. 
+
+Aber genug des Jammerns: Wenn die Dateien lokal vorliegen, flutschen die Queries natürlich nur so und das Duo DuckDB und GeoParquet wird noch viel Freude bereiten. Zu guter Letzt noch ein Hinweis auf ein nettes Goodie: das https://duckdb.org/docs/data/partitioning/hive_partitioning[hive partitioning]. Das funktioniert lokal oder mit S3. Grundsätzlich erlaubt es DuckDB mehrere Parquet-Dateien als eine anzusprechen:
+
+[source,sql,linenums]
+----
+SELECT 
+    count(t_ili_tid)
+FROM 
+    read_parquet('s3://xxxxxxxxxxxxx/ch.so.arp.nutzungsplanung.kommunal/*.parquet', hive_partitioning = 1)
+;
+----
+
+Es gilt die Annahme, dass für jede Gemeinde eine Datei vorliegt und im Verzeichnis/Bucket `ch.so.arp.nutzungsplanung.kommunal` liegt. Hat man sehr viele (z.B ganze Schweiz oder so) Dateien, kann man das beschleunigen, indem man für jede Gemeinde einen Unterordner macht und diesen korrekt benennt: `bfs_nr=<xxxx>`. Wenn man in einer Query nur noch an Daten einer spezifischen Gemeinde interessiert ist, sucht DuckDB auch nur noch in diesem Unterordner (und muss nicht mehr sämtliche Dateien durchsuchen):
+
+[source,sql,linenums]
+----
+SELECT 
+    count(t_ili_tid)
+FROM 
+    read_parquet('s3://xxxxxxxxxxxxx/ch.so.arp.nutzungsplanung.kommunal/*/grundnutzung.parquet', hive_partitioning = 1)
+WHERE
+    bfs_nr = 2503
+;
+----
+
+
+

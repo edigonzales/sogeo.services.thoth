@@ -1,0 +1,59 @@
+---
+= Datenflüsse mit Gradle #3 - GRETL 
+Stefan Ziegler
+2018-02-11
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: KGDI,GDI,Gradle,Groovy,Java,INTERLIS,GRETL,Datenintegration
+:idprefix:
+---
+Vor etwas mehr als http://blog.sogeo.services/blog/2017/01/19/datenfluesse-mit-gradle-1.html[einem] http://blog.sogeo.services/blog/2017/02/08/datenfluesse-mit-gradle-2.html[Jahr] habe in zwei Beiträgen erläutert, wie wir in Zukunft die Datenflüsse rund um unsere GDI gestalten wollen. Im vergangenen Jahr haben wir das nun mit http://www.eisenhutinformatik.ch/[externer Hilfe] umgesetzt resp. einen ersten Wurf mit den - für uns - wichtigsten Funktionalitäten. Der Name für unser neues Lieblingsspielzeug ist GRETL: Gradle ETL.
+
+Rekapitulation: Seit Anbeginn der (GIS-)Zeit dreht sich bei uns viel oder fast alles um die Datenbank (&laquo;Datenbank-zentrisches Amt&raquo;). Fast alles wurde von irgendwo her in die Datenbank importiert, vieles wurde auch darin berechnet und sämtliche Daten wurden in irgendeiner Form auch wieder exportiert. So weit, so gut. Die Schnittstellen wie die Daten in die Datenbank reinkommen oder wieder rauskommen oder wie die Berechnung durchgeführt wird, ist unendlich heterogen gelöst. Zuerst good old _PHP4_, später dann Python-Skripte (&laquo;Yeah, wir sind modern.&raquo;) und auch mal Java hier und dort. Import, Datenumbau und Berechnung im Skript wild durcheinander. Und immer wieder Probleme mit Fremddatenbanken (Oracle, SQL-Server), da keine passenden Treiber im Haus. Wir haben festgestellt, dass sich die einzelnen Schritte eines solchen Prozesses leicht identifizieren lassen und auch kapseln lassen und diese eben auch immer etwa gleich aussehen. Die einzelnen Schritte werden als http://www.gradle.org[Gradle]-Tasks erstellt und anschliessend zu einem Job aneinandergereit. Gradle haben wir gewählt, weil es bereits viel von unseren Anforderungen out-of-the-box oder durch Plugins abdecken kann:
+
+* Herunterladen, Entzippen und Kopieren von Daten
+* Logging 
+* Abhängigkeiten zwischen den einzelnen Tasks (http://trickyandroid.com/gradle-tip-3-tasks-ordering/[tasks ordering])
+* Via SSH Befehle auf externen Servern ausführen.
+* https://flywaydb.org/[Flyway]
+* Deployments auf AWS etc.
+* Dokumentation mit Asciidoctor
+* etc. etc.
+
+Für die fehlenden zusätzlichen Tasks ist Gradle relativ einfach mit Java (oder Groovy) erweiterbar.
+
+Der Quellcode befindet sich im dazugehörigen https://github.com/sogis/gretl[Github-Repository]. Die ganze Geschichte ist momentan noch klein wenig unübersichtlich strukturiert. Neben den ganzen Funktionalitäten, gibt es im Repository noch viel anderen Code: CI/CD-Pipeline inkl. Deployment in einer OpenShift-Umgebung als Docker-Container und viel Code für die Abhängigkeiten der Integrationstests etc. Der eigentliche Quellcode liegt im Unterordner `gretl`. Eine umfangreiche User-Dokumentation im Ordner `docs/user` inkl. einem https://github.com/sogis/gretl/blob/master/docs/user/index.md#kleines-beispiel[minimalen Beispiel].
+
+Zum jetzigen Zeitpunkt gibt es folgende zusätzlichen Tasks:
+
+* *SQLExecutor*: Dieser Task führt beliebige parametrisierbare SQL-Befehle in einer Datenbank aus.
+* *Db2Db*: Kopiert Tabellen aus einer Datenbank in einer andere. Einfache, parametrisierbare Datenumbauten sind möglich. Dank JDBC wird (theoretisch) jede Datenbank unterstützt für die ein JDBC-Treiber verfügbar ist.
+* *CsvImport / CsvExport*: Import und Export von CSV-Dateien in resp. aus einer Datenbank. 
+* *ShpImport / ShpExport*: Import und Export von Shapedateien. (Traurig aber wahr: Sogar noch vor GeoPackage realisiert...)
+* *CsvValidator / ShpValidator*: Prüft den Inhalt der CSV- resp. Shapedateien gegenüber einer vorgegebenen Struktur. Die umgesetzte Lösung ist schlicht genial. Dazu in einem anderen Beitrag mehr.
+* *Ili2pg*: Für den Umgang mit INTERLIS wurden mit `ili2pg` verschiedene Tasks gebaut (Import, Export, Replace, Schema-Import)
+* *Ilivalidator*: Zum Prüfen für die INTERLIS-Transferdateien wurde ein ilivalidator-Task programmiert.
+
+Mit diesen funktional atomaren Tasks (und den in Gradle vorhandenen Funktionalitäten) kommt man bereits jetzt ziemlich weit.
+
+Builden und installieren funktioniert wie man es von Gradle kennt:
+
+`./gradlew clean build install`
+
+Das erstellte Produkt ist ein Gradle-Plugin, das im lokalen Maven-Respository installiert wird und anschliessend in den Jobs (= build.gradle) angesprochen werden kann. 
+
+Herausfordernd ist die Testerei: Will man möglichst Nahe an der Realität testen, kommt man nicht um eine PostgreSQL-/PostGIS-Datenbank herum. Viel JDBC-mässiger Code lässt sich zwar auch mit einer Derby-Datenbank testen, aber wenn es um &laquo;Geo&raquo; geht, muss PostgreSQL/PostGIS her. Momentan ist das so gelöst, dass der Entwickler manuell eine dockerisierte PostgreSQL/PostGIS-Datenbank hochfährt und anschliessend die Tests einer bestimmten Kategorie durchführen kann. Denkbar wäre auch, dass man in Gradle verschiedene https://www.petrikainulainen.net/programming/gradle/getting-started-with-gradle-integration-testing-with-the-testsets-plugin/[TestSets] https://github.com/sogis/ilivalidator-web-service/blob/master/build.gradle#L41[einführt] und so eine bessere Steuerbarkeit der Tests herbeiführt. Anstatt die dockerisierte Datenbank manuell hochzufahren, fände ich z.B. https://www.testcontainers.org/[TestContainers] eine sehr elegante Lösung. &laquo;Passt scho.&raquo;
+
+Wir werden bei uns in der Produktion nicht das pure Plugin verwenden, sondern möchten eine GRETL-Runtime als Docker-Image in Betrieb nehmen. Im Image sind sämtliche benötigten Abhängigkeiten (im Sinne von Bibliotheken etc.). Gradles https://docs.gradle.org/current/userguide/introduction_dependency_management.html[Dependency Management] ist ja schön und gut, im produktiven Betrieb will man aber nicht zu viel Feenstaub, sondern exakt wissen welche Version welcher Bibliothek in Betrieb ist oder zumindest sicher sein, dass heute nicht eine andere in Betrieb ist als gestern. Ebenso werden die benötigten INTERLIS-Modellablagen mit `ili2c` geklont, um komplett offline agieren zu können. 
+
+Ganz abgefahren wird es bei der Orchestrierung der Jobs. Wir gehen davon aus, dass wir circa 100 bis 200 einzelne Jobs haben werden. Der grösste Teil sind Datenumbauten in der Datenbank resp. von einer Erfassungsdatenbank in eine Publikationsdatenbank. Bei dieser Anzahl von Jobs will man in keiner Software selber gross konfigurieren. Sei es erstmalig oder bei Änderungen, die sämtliche Jobs betreffen. Als Fundament für diese Orchestrierung setzen wir https://jenkins.io/[Jenkins] ein. Für die Konfiguration der Jobs wird es einen &laquo;Seeder-Job&raquo; geben, der sämtliche anderen Jobs aufgrund eines Jenkinsfiles in Jenkins definiert. Diese Jobs können anschliessend cronjob-mässig automatisch ausgeführt werden oder auch on-demand durch einen Benutzer. Und wenn das alles so klappt wie gewünscht, habe ich ein paar graue Haare mehr und mache drei Kreuze an die Decke... Jedenfalls ist es &laquo;Spatial Is Not Special&raquo; ziemlich auf die Spitze getrieben.
+
+Der Appetit kommt wie so oft mit dem Essen. Folgende zusätzlichen Tasks oder Funktionalitäten stehen auf dem Wunschzettel:
+
+* Unterstützung von GeoPackage
+* Bei den Export-Prozessen sollen auch SQL-Queries als Input möglich sein und nicht bloss Tabellen oder Views.
+* Die Geometrie (in einer noch zu bestimmenden Form) soll beim CSV-Export unterstützt werden.
+* Unterstützung für JasperResports
+* Upload-Funktionalität in die http://www.geodienste.ch[Aggregationsinfrastruktur der Kantone]
+* Vielleicht ein wenig unorthodox: Ein https://community.hds.com/docs/DOC-1009855[Kettle-PDI]-Ausführ-Task.
+* ???

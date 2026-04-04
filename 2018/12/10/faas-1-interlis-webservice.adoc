@@ -1,0 +1,123 @@
+---
+= Function as a Service #1 - Der kleinstmögliche INTERLIS-Webservice
+Stefan Ziegler
+2018-12-10
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: Azure,Java,INTERLIS,FaaS,Serverless
+:idprefix:
+---
+Lange Zeit hatte ich überhaupt keinen Plan was genau eigentlich Serverless und/oder Function as as Service (FaaS) genau bringen soll. Serverless ist vielleicht auch ein doofer Begriff, da ja trotzdem irgendwo Server laufen müssen. Nur, dass ich mich genau nicht um Server kümmern muss, sondern ich sie als gegeben betrachten kann. FaaS deutet es dann besser an: Es geht um die Funktion. Also um die eigentliche Businesslogik. Zu guter Letzt heisst das für mich, dass ich mich nur noch darum kümmern brauche. Nicht mehr um (virtualiserte) Server, nicht mehr um Webserver in der meine Anwendung läuft, sondern nur noch um die reine Businesslogik. Was auch das Deployment vereinfachen kann.
+
+Hat man das so halbwegs geschnallt (hoffe ich wenigstens), sucht man sich natürlich Aufgaben, die damit gelöst werden könnten. Interessanterweise gibt es tatsächlich einiges, das man so relativ elegant umsetzen kann. Ein kleines Beispiel ist ein INTERLIS-Webservice mit https://github.com/claeis/ilivalidator[`ilivalidator`]. Momentan stellen wir für die Büros, welche die Nutzungsplanung für uns digitalisieren, einen https://github.com/sogis/ilivalidator-web-service[Webservice] auf Basis von https://spring.io/projects/spring-boot[Spring Boot] zur Verfügung. Die Anwendung wird gedockert und läuft zukünftig in der OpenShift-Umgebung des Kantons. Das Verhältnis zwischen eigentlicher Businesslogik und dem Rest ist krass: Die Prüfung der INTERLIS-Transferdatei sind bloss ein paar Zeilen Code, alles andere das x-fache. 
+
+Der Ablauf der Prüfung ist sehr einfach:
+
+1. Benutzer lädt die INTERLIS-Transferdatei hoch.
+2. Die Datei wird lokal gespeichert.
+3. `ilivalidator` prüft die Datei und speichert das Logfile.
+4. Das Logfile wird an den Benutzer zurückgesendet.
+
+Sowohl https://docs.aws.amazon.com/lambda/latest/dg/welcome.html[Amazon], wie auch https://cloud.google.com/functions/[Google] und https://azure.microsoft.com/en-us/services/functions/[Microsoft] bieten auf ihren Plattformen FaaS an. Google ist raus, weil sie zur Zeit kein Java unterstützen. Amazon ist wohl am ältesten resp. erfahrensten, ist mir aber sogar noch unsympathischer als Microsoft... Ausschlaggebend war aber, dass ich auf die Schnelle besser verstanden habe, wie man Dateien hochladen kann. Das scheint nicht ganz so der Fokus dieser FaaS-Implementierungen zu sein. Oder aber es wird davon ausgegangen, dass die Daten in einen S3-Bucket (AWS) oder Blob-Storage (Azure?) hochgeladen werden und die Funktion dann durch den Upload getriggert wird. Das schien mir zum Ausprobieren dann doch arg kompliziert, auch wenn es vielleicht die nachhaltigere Variante wäre. Oracle hat mit https://github.com/fnproject[Fn Project] auch was am Start aber noch nicht live verfügbar, daher viel auch das weg. Bei Fn Project wird stark auf Docker gesetzt, was beim Entwicklen zur einer Docker-Image-Orgie ausartet. Die Fehlersuche dünkt mich so auch schwieriger, weil alles nur einem Container läuft.
+
+Als erstes habe ich mir mit https://www.vagrantup.com/[Vagrant] eine https://github.com/edigonzales/azure-functions-test/blob/master/Vagrantfile[virtuelle Maschine] mit all den https://docs.microsoft.com/en-us/azure/azure-functions/functions-create-first-java-maven[benötigten lokalen Azure-Tools] gebastelt. Die lokale Entwicklungsumgebung von Azure hört auf dem Port 7071, d.h. man darf die Portweiterleitung für die virtuelle Maschine nicht vergessen. Läuft alles einwandfrei, kann die erste Java-Funktion entwickelt werden. Java für Azure Functions ist immer noch im sogenannten &laquo;Preview&raquo;-Status, d.h. im Gegensatz zu anderen Sprachen ist die funktionale Unterstützung eher bescheiden.
+
+Mit https://maven.apache.org/[Maven] kann man sich ein Beispielprojekt erstellen lassen:
+
+[source,xml,linenums]
+----
+mvn archetype:generate -DarchetypeGroupId=com.microsoft.azure -DarchetypeArtifactId=azure-functions-archetype 
+----
+
+Wenn nach der Region gefragt wird, wo die Funktion rattern soll, muss man auf Anhieb die richtige wählen. So wie ich es verstanden habe, kann man das nachträglich nicht mehr so einfach ändern. In der IDE der Wahl importiert man anschliessend das Maven-Projekt. Im einfachsten Fall schreibt man wirklich nur eine einzige Funktion. Der INTERLIS-Webservice sieht so aus:
+
+[source,java,linenums]
+----
+public class Function {
+    /**
+     * This function listens at endpoint "/api/validate". Invoke it using "curl" command in bash:
+     * _ curl --request POST --header "Content-Type:application/octet-stream" --data-binary @ch_254900.itf http://localhost:7071/api/validate&code={your function key}
+     * Function Key is not needed when running locally, to invoke HttpTrigger deployed to Azure, see here(https://docs.microsoft.com/en-us/azure/azure-functions/functions-bindings-http-webhook#authorization-keys) on how to get function key for your app.
+     */
+    @FunctionName("validate")
+    public String run(
+            @HttpTrigger(name = "req", methods = {HttpMethod.POST}, authLevel = AuthorizationLevel.FUNCTION, dataType="binary") HttpRequestMessage<Byte[]> req,
+            final ExecutionContext context) {
+        
+        System.setProperty("user.home", "/tmp");
+
+        try {                        
+            byte[] byteFile = ArrayUtils.toPrimitive(req.getBody());
+            File uploadedFile = File.createTempFile("upload", ".interlis");
+            FileUtils.writeByteArrayToFile(uploadedFile, byteFile);
+
+            String logFileName = uploadedFile.getAbsolutePath() + ".log";
+
+            Settings settings = new Settings();
+            settings.setValue(Validator.SETTING_ILIDIRS, Validator.SETTING_DEFAULT_ILIDIRS);
+            settings.setValue(Validator.SETTING_LOGFILE, logFileName);
+
+            Validator.runValidation(uploadedFile.getAbsolutePath(), settings);
+
+            String logFileContent = new String(Files.readAllBytes(Paths.get(logFileName)));
+            return logFileContent;
+        } catch (Exception e) {
+            e.printStackTrace();
+            context.getLogger().info(e.getMessage());
+            return e.getMessage();
+        }
+    }
+}
+----
+
+**Zeile 7:** Mit dieser Annotation wird Name der Funktion, wie sie von Aussen aufrufbar ist, definiert.
+
+**Zeile 9:** Mit `HttpTrigger` wird bestimmt, dass die Funktion durch einen HTTP-Aufruf getriggert wird. Es stehen noch andere Trigger zur https://docs.microsoft.com/en-us/azure/azure-functions/functions-triggers-bindings#supported-bindings[Verfügung], z.B. eben Blobstorage oder Timer (was dann etwas wie einem Cronjob entspräche). `authLevel` definiert wie ich mich authorisieren muss. `AuthorizationLevel.FUNCTION` bedeutet, dass ich mich mit einem Token (aka &laquo;Function key&raquo;) authorisieren muss, der an den Funktionsaufruf als GET-Parameter angehängt wird. `HttpRequestMessage<Byte[]> req` definiert die Input Bindings. In meinem Fall erwarte ich ein Byte-Array, weil ich eine Datei hochladen will. Hier wird es mit Java schon mal knifflig. Irgendwie ist hier noch nicht alles so wie es sein sollte oder wie ich es möchte. Einerseits sind noch spezifische Java-Bugs vorhanden und andererseits ist mir nicht ganz klar, warum man nicht Multipart-File-Uploads unterstützt. Vielleicht es es nur noch nicht umgesetzt oder aber man will es nicht unterstützen. 
+
+**Zeile 12:** `ilivalidator` resp. der INTERLIS-Compiler versucht einen lokalen Cache der benötigten Modelle im User-Home-Verzeichnis anzulegen. In der lokalen Entwicklungsumgebung hat das auch wunderbar funktioniert. War die Funktion aber auf Azure deployed, kam eine Fehlermeldung, dass das Verzeichnis nicht angelegt werden könne. Lustigerweise zeigt `"user.home"` auf Azure auf das `C:\`-Laufwerk. Workaround ist das Verändern des Properties. Ganz https://github.com/claeis/ili2c/blob/b7d6ed2ab3ace4a4c4f1a980cf831ae6fd53ea29/src/ch/interlis/ilirepository/impl/RepositoryAccess.java#L70[neu] kann man im INTERLIS-Compiler (unreleased, resp. nur Snapshots) das Cache-Verzeichnis via ENV-Variable setzen. 
+
+**Zeile 15 - 17:** Das Speichern des Request-Bodies in einer Datei hat mich einiges an Zeit gekostet. Probleme machten natürlich wieder einmal die Umlaute. So scheint es jedenfalls zu funktionieren. Mit einem Multipart-File-Upload hat das nie solche Probleme gemacht.
+
+Der Rest ist altbekannt und nicht Azure-relevant.
+
+Lokal builden und starten kann ich die Funktion mit folgendem Befehl:
+
+[source,xml,linenums]
+----
+mvn clean package && mvn azure-functions:run
+----
+
+Mit `curl` kann ich die Funktion testen:
+
+[source,xml,linenums]
+----
+curl --request POST --header "Content-Type:application/octet-stream" --data-binary @ch_254900.itf http://localhost:7071/api/validate
+----
+
+Einen ordinären Mulitpart-Form-File-Upload würde ich mit `-F file=@ch_254900.itf` anstelle von `--data-binary @ch_254900.itf` machen. Wenn ich das - auch mit korrektem Header - probiere, schaffe ich das Parsen den Request-Bodies nicht und die Umlaute funktionieren auch nicht. Vielleicht geht das schon, wenn man in dieser Thematik versierter ist.
+
+Das Resultat des `curl`-Aufrufes ist der Inhalt der ilivalidator-Logdatei.
+
+Wenn ich die Funktion nun auf Azure deployen will, muss ich mich zuerst auf der Konsole mit `az login` einloggen. Komischerweise öffnet sich ein Browser, wo man anschliessend die Credentials eintippen muss. Ich gehe davon, dass das auch ohne GUI geht. Deployen geht mit Maven:
+
+[source,xml,linenums]
+----
+mvn azure-functions:deploy
+----
+
+Beim allerersten Mal dauert das relativ lange, weil komplett alles angelegt werden muss. Redeployments gehen viel schneller. Wenn die Funktion mit einem Function key (den man im Azure Web-Portal findet) geschützt ist, sieht der Aufruf so aus:
+
+[source,xml,linenums]
+----
+curl --request POST --header "Content-Type:application/octet-stream" --data-binary @ch_254900.itf https://ilivalidator-functions-20181205142252080.azurewebsites.net/api/validate?code=<my function key>
+----
+
+Das Schöne an den Azure Functions ist, dass man nur https://azure.microsoft.com/en-us/pricing/details/functions/[bezahlt] wenn sie wirklich aufgerufen werden. Man zahlt etwas pro Aufruf und für die Ausführungsdauer. Es gibt auch einen &laquo;Free Grant&raquo; pro Monat, der gemäss unserer Benutzerstatistik völlig ausreichen würde. Hier sieht man bereits einen Vorteil von FaaS.
+
+Wo Licht ist, ist auch Schatten: 
+
+- Man kann niemandem zumuten, dass man mit `curl` die Daten hochladen muss. Es fehlt ein einfaches GUI resp. eine einfache Webseite zum Hochladen der Dateien. Vielleicht kann man die Webseite sogar in einem Storage auf Azure hosten, dann wäre man wieder fein raus.
+
+- Es gibt sowohl Limits was die https://docs.microsoft.com/en-us/azure/azure-functions/functions-bindings-http-webhook#trigger---limits[Uploadgrösse wie auch die Ausführungszeit] betrifft. Dauert die Ausführung länger oder will man grössere Dateien hochladen, muss man andere Wege mit Azure finden.
+
+- Performance ist auf den ersten Blick so lala. https://www.azurefromthetrenches.com/azure-functions-vs-aws-lambda-scaling-face-off/[Vergleiche] mit AWS Lambda zeigen, dass da tatsächlich noch Aufholbedarf ist. Wie matchentscheidend das ist, kommt natürlich auf den Use Case an.

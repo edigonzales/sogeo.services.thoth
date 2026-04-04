@@ -1,0 +1,76 @@
+---
+= ÖREB-Kataster richtig gemacht #13 - map.oereb.services und weitere Beobachtungen
+Stefan Ziegler
+2023-01-11
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: ÖREB,ÖREB-Kataster,Spring Boot,GWT,Java
+:idprefix:
+---
+Um die URL ein wenig einprägsamer zu machen, habe ich die Resultate der Prüfungen der kantonalen ÖREB-Kataster-Dienste unter https://monitoring.oereb.services[monitoring.oereb.services] publiziert (Digitalocean 10-Dollar-Deployment. Und irgendwie verstehe ich nicht wie genau das Restarten des Containers funktioniert, wenn der Health Check fehl schlägt. Oder übersehe ich was?). Ein Kanton hat sich bereits bewegt: Der Kanton Zürich hat &laquo;Versions&raquo; und &laquo;GetEGRID&raquo; korrigiert.
+
+Die ÖREB-Spezifikationen und Weisungen sind gut, insbesondere die des ÖREB-Webservices und des DATA-Extracts. Mit dem XML-Output lässt sich z.B. das PDF erzeugen. Man muss (und soll) nicht zwei unterschiedliche Wege für die Herstellung des XML und des PDF beschreiten. Sondern das XML herstellen und daraus das PDF ableiten. Somit lassen sich bereits viele Fehler vermeiden, z.B. Inhalt XML != Inhalt PDF usw.
+
+Eine andere Anwendungsmöglichkeit des XML-Auszuges ist die Aufbereitung/Ableitung zum dynamischen Auszug, sprich zu einer Webanwendung. Die Webanwendung braucht bloss den XML-Auszug für ein Grundstück abzurufen und kann aus den Informationen eine mehr oder weniger schicke Anwendung konfigurieren. Ich denke, einige der Clients der Kantone funktionieren (hoffentlich) so. Macht man das nun mit dem Anspruch, dass es schweizweit funktionieren soll - wir sind ja standardisiert - gewinnt man wieder Erkenntnisse über die Spezialitäten der Kantone und wohl auch noch über Fehler, die man sonst weniger gut entdecken würde. Gesagt, getan: https://map.oereb.services[map.oereb.services]. Es gibt sicher noch das eine oder andere Grundstück, wo es nicht funktioniert. Mal was Null, was man abfangen sollte o.ä. Und es fehlen genügend funktionierende Dienste, die Änderungen mit und ohne Vorwirkung publizieren, um die Gruppierung / Reihenfolge des Clients zu validieren. Oder ich habe die betroffenen Grundstücke nicht gefunden.
+
+Zuerst ein paar nicht-ÖREB-Bemerkungen:
+
+Die Anwendung ist komplett in Java mit https://www.gwtproject.org/[GWT] geschrieben. Als Toolkit wird https://demo.dominokit.org/home[_Domino Kit_] verwendet. Das führt zu einem sehr angenehmen Entwickeln, da man sich im gleichen Ökosystem (Sprache, IDE, Build Tools) bewegt wie sonst auch. Mit https://graalvm.org[GraalVM] zu einem Native Image runterkompilieren und die &laquo;Java&raquo;-Anwendung startet 0.06 Sekunden.
+
+Will man etwas wie eine Adressen- und Grundstücksuche anbieten, reichen die Möglichkeiten des ÖREB-Webservices nicht mehr aus. Es fehlt schlichtweg die Möglichkeit mittels Freitext zu suchen. Soweit auch nicht schlimm und wohl auch nicht sinnvoll. Der https://api3.geo.admin.ch/services/sdiservices.html#search[Search-Service] der GeoAdmin API hilft uns. Der Dienst liefert eine Koordinate zurück. Mit dieser kann man einen EGRID beim ÖREB-Webservice abfragen. Nun müsste man die Anfrage an den Service eines jeden Kantons machen. Das wird nicht performen. Abhilfe schafft auch hier wieder die GeoAdmin API indem man den https://api3.geo.admin.ch/services/sdiservices.html#feature-resource[Feature Resource] Dienst verwendet und wissen will, in welchem Kanton (`ch.swisstopo.swissboundaries3d-kanton-flaeche.fill`) die soeben erhaltene Koordinate liegt. Mit diesem Wissen kann man direkt den Service des betroffenen Kantons mit dem GetEGRID-Request beglücken. Der vermeintlich unnötige GetEGRID-Request ist notwendig, um zu eruieren, ob es sich um eine Liegenschaft oder um ein Baurecht handelt, wenn man einen Auszug mittels Klick in die Karte anfordert und es an dieser Stelle https://map.oereb.services/?egrid=CH527354320619[mehrere Grundstücke] gibt.
+
+Für die Hintergrundkarte verwende ich den ÖREB-Situationsplan von https://geodienste.ch/services/av/info[geodienste.ch]. Leider fehlt ein schweizweiter WMTS dieser Hintergrundkarte. Aus diesem Grund wirkt das Zoomen und Pannen nicht so &laquo;snappy&raquo;.
+
+Nun zu den ÖREB-Kataster spezifischen Bemerkungen und Beobachtungen:
+
+**Inkompatible Kantone**
+
+Von den momentan vorhandenen Versions-2-Kantonen, können folgende Kantone nicht für diesen Anwendungsfall verwendet werden (oder es wäre nur mit unnötigem Geknorze möglich):
+
+- AI: WMS verlangt Authentifizierung, https://www.geoportal.ch/services/wms/ktai?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&FORMAT=image%2Fpng&TRANSPARENT=true&LAYERS=ch.geoportal.raumplanung_grundstueckskataster.1478.0.oereb_zonenplan_kt_ai&MAPID=1478&CRS=EPSG%3A2056&WIDTH=493&HEIGHT=280&BBOX=2748370.5620040814%2C1243979.8562142858%2C2748756.2509959186%2C1244198.9087857143&AUTHENTICATE=true&EPOCH=2022-10-28T20%3A00%3A19&SRS=EPSG%3A2056[Beispielrequest].
+- AR: WMS verlangt Authentifizerung
+- BS: GEOMETRY=true beim https://api.oereb.bs.ch/getegrid/xml/?EN=2612855,1267223&GEOMETRY=true[GetEGRID-Request] führt zu Fehlern.
+- FR: Geometrie fehlt beim https://geo.fr.ch/RDPPF_ws/RdppfSVC.svc/getegrid/xml/?EN=2578478,1183785&GEOMETRY=true[GetEGRID-Request].
+- LU: Liefert keinen Referenz-WMS im Auszug mit.
+- NW: Liefert keinen Referenz-WMS im Auszug mit.
+- OW: Liefert keinen Referenz-WMS im Auszug mit.
+- SG: WMS verlangt Authentifizerung.
+- UR: Die Geometrien weisen ein falsches Koordinatensystem auf.
+- VS: Anstelle eines WMS wird eine ESRI-Irgendwas-Dienste-URL mitgeliefert.
+
+Es funktionieren die Kantone AG, BE, BL, GR, JU, NE, SO, TG, TI, ZG, ZH.
+
+**CORS**
+
+Ich wollte ohne Umwege über ein Backend den XML-Auszug anfordern und im Browser verarbeiten. D.h. das XML wird vom Browser angefordert. Nun geht das leider bei vielen Kantonen nicht, da die &laquo;CORS-Header&raquo; nicht gesetzt werden. Die KGK hat vor geraumer Zeit die Kantone darüber informiert. Damals ging es um die GetCapabilities-Antwort eines WMS, die vom Browser ohne die Header nicht verarbeitet werden kann:
+
+image::corsheader.png[alt="cors header", align="center"]
+
+Funktioniert hat es (ohne alle zu prüfen) in den Kantonen BE, SO und TG. Um dennoch an den XML-Auszug zu kommen, musste ein einfacher Proxy her, der serverseitig das XML anfordert und an den Browser zurückschickt.
+
+**Layer-Opazität**
+
+Es gibt das Attribut _layerOpacity_, das die Deckkraft des Kartenelements regelt. In den Kantonen JU und ZH ist der Wert &laquo;1&raquo;. Das bedeutet, dass die Karte komplett deckend ist. Wahrscheinlich nicht so gewollt.
+
+**Reihenfolge**
+
+Die Reihenfolge der Themen wie auch der Dokumente ist in der Weisung definiert.
+Beim Kanton Zürich ist mir aufgefallen, dass die Reihenfolge der gesetzlichen Grundlagen nicht stimmt. Das RPG wird ganz am Ende aufgelistet und sollte eigentlich als erstes geführt werden. Der Kanton Aargau verwendet hier https://api.geo.ag.ch/v2/oereb/extract/xml/?EGRID=CH832377520646[&laquo;None&raquo;]. Das habe ich netterweise im Code abgefangen. Die Reihenfolge der Themen habe mir nicht angeschaut. 
+
+Die gerenderte Reihenfolge meines Clients müsste ich auch vertieft verifizieren, ob sie stimmt. Im ZH-Fall habe ich es im XML nachgeprüft.
+
+**Performance**
+
+Vielleicht ein heikles Thema. Mich dünkt, dass einige Dienste langsam sind. Ein denkbare Erklärung kann auch der http://blog.sogeo.services/blog/2022/10/16/oereb-kataster-richtig-gemacht-9.html[&laquo;ÖREB-Habasch&raquo;] sein, der im betroffenen Kanton wütet. Auffallend ist jedoch, dass Kantone mit der gleichen Software eher zu den langsameren gehören. Als Extrembeispiel dient der Kanton Aargau. Die GetEGRID-Anfrage dauert für ein https://map.oereb.services/?egrid=CH467223527107[Einfamilienhaus-Grundstück] zwischen 1 und 6 Sekunden. Das ist m.E. nicht mehr nachvollziehbar. Warum soll eine Point-in-Polygon-Abfrage so viel Zeit in Anspruch nehmen? Der Extract nimmt zwischen 5 und 12 Sekunden in Anspruch. Im https://map.oereb.services/?egrid=CH756746873539[Kanton Bern] ist es circa 1 Sekunde für den GetEGRID-Request und 3 Sekunden für den Extract. Die Kantone https://map.oereb.services/?egrid=CH338277496924[BL] und https://map.oereb.services/?egrid=CH548749776707[NE] sind ähnlich. Im Issue-Tracker findet man Meldungen zu einer https://github.com/openoereb/pyramid_oereb/issues/1508[Performance-Verschlechterung] in den neueren Versionen. Ich habe jedenfalls in Erinnerung, dass diese Kantone in der Version 1.0 schneller waren.
+
+Am anderen Ende der Skala sind die Kantone TG, ZH und SO: Da sind die GetEGRID-Requests im tieferen 3-stelligen Millisekundenbereich und der Extract gibt es für nicht allzu grosse Grundstücke im Subsekunden-Bereich.
+
+**Url-Encoding**
+
+Was ich echt nicht verstehe, sind gewisse Url-Encodings. Warum macht man sowas: &laquo;https%3A%2F%2Fwww.oereb2.apps.be.ch%2Fimage%2Fsymbol%2Fch.Nutzungsplanung%2Flegend_entry.png%3Fidentifier%3D3bcf516e-6419-4657-9190-a075e60c9512&raquo;? Warum encodiert man den Doppelpunkt und die beiden Slashs des Url-Schemas? Das ist doch nie nötig? Und ist bloss mühsam wenn man damit arbeiten will.
+
+**Identische Namen für unterschiedliche Dokumente**
+
+Beim Kanton Aargau erkennt man das https://oereblex.ag.ch/app/de/decrees[ÖREBlex-Datenmodell] wieder. Dort gibt es pro Entscheid ein Dokument, das Anhänge haben kann (oder so ähnlich). Das führt dazu, dass im XML unterschiedliche Dokumente den gleichen Titel aufweisen. Ob das sinnvoll ist, weiss ich nicht so recht. Tendiere zu nein. Der Kanton Aargau hat das jedenfalls visuell ansprechend im https://apps.geo.ag.ch/oereb/client/?lang=de&map_x=2646295.685&map_y=1248707.667&map_zoom=12&egrid=CH807752802322[dynamischen] Auszug gelöst (siehe Nutzungsplanung). Dito im PDF. Ganz streng genommen, sieht das wahrscheinlich die https://www.cadastre.ch/de/services/publication.detail.document.html/cadastre-internet/de/documents/oereb-weisungen/Weisung-OEREB-statischer-Auszug-de.pdf.html[Weisung zum statischen Auszug] nicht vor. In https://map.oereb.services/?egrid=CH807752802322[meinem Client] wird jedes Dokument aufgelistet, egal ob es den gleichen Titel trägt. Also auch wieder ein Spezialität, die man als Entwickler kennen müsste, weil mindestens nicht offensichtlich.
+
+Was man auch automatisch durch eine Maschine testen sollte, ist der _layerIndex_ der Map-Elemente. Wenn sämtliche Elemente, also auch die Hintergrundkarte, den gleichen Wert aufweisen, weiss man nicht in welcher Reihenfolge die Bilder geschichtet werden müssen. Und wohl müsste im Regelfall (oder immer) die Hintergrundkarte - nomen est omen - tatsächlich im Hintergrund sein, also den kleinsten Wert aufweisen.

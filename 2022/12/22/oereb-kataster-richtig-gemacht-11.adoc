@@ -1,0 +1,50 @@
+---
+= ÖREB-Kataster richtig gemacht #11 - ÖREB-Kataster Compliance Test Suite Webservice
+Stefan Ziegler
+2022-12-22
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: ÖREB,ÖREB-Kataster,Spring Boot
+:idprefix:
+---
+Im Oktober habe ich einen Prototypen eines ÖREB-Kataster-Checkers http://blog.sogeo.services/blog/2022/10/02/oereb-kataster-richtig-gemacht-8.html[vorgestellt]. Das Ganze habe ich als https://sogis-oereb-cts-remdc.ondigitalocean.app/[Webservice deployed], der alle paar Stunden die Prüfungen macht. Geprüft wird lange nicht alles was geprüft werden könnte, sondern nur einige Aspekte, die mir wichtig scheinen (oder einfach zu implementieren waren):
+
+- HTTP Status Code
+- Response Content Type 
+- Schemakonformität 
+- Gibt es Geometrie-Elemente, wenn solche vorhanden sein müssen (resp. umgekehrt)?
+- Sind die Geometrien im Bezugsrahmen LV95?
+- Gibt es eingebettete Bilder, wenn solche vorhanden sein müssen (resp. umgekehrt)?
+- Sind alle Bundesthemen-Codes im XML-Inhaltsverzeichnis vorhanden? (ConcernedTheme, NotConcernedTheme, ThemeWithoutData)
+
+Beim Response Content Type lasse ich `application/xml; charset=UTF-8` als korrekt durchgehen, auch wenn die Weisung nur von `application/xml` spricht. Ob alle Bundesthemen-Codes vorhanden sein müssen, ist mir selber nicht ganz klar. Wenn man z.B. die neuen Themen noch nicht umgesetzt hat, könnten sie fehlen. Aber in diesem Fall sollten sie sinnvollerweise bei den Themen ohne Daten erscheinen.
+
+Einige erwähnenswerte Beobachtungen:
+
+Verschiedene Kantone (BS, GR, NW, OW, UR, VS, ZH) verwenden einen falschen Status Code bei der Weiterleitung zum dynamischen Auszug. Entweder wird 301 oder 302 verwendet, korrekt ist 303. Der Kanton Wallis ist ein Spezialfall. Dazu später mehr.
+
+Einige Kantone (AG, BS, GR, TI) scheinen noch nicht eine aktuelle pyramidoereb-Version zu verwenden. Da gab es noch ein https://github.com/openoereb/pyramid_oereb/issues/1601[Problem mit der Schemakonformität und dem QRCode/QRCodeRef-Element].
+
+Der Content Type ist in seltenen Fällen falsch (und kein Folgefehler): Die Kantone Obwalden, Nidwalden und Uri verwenden beim Extract `text/xml; charset=utf-8`. 
+
+Bei vielen Kantonen fehlen _meines Erachtens_ verschiedene Bundesthemen-Codes im Extract. Es gibt zwei Fälle zu unterscheiden: Das sind die Kantone (AG, AR, BE, SG, ZH), welche die neuen Themen noch nicht umgesetzt haben. Ich finde, wenn man schon das Rahmenmodell Version 2 verwendet, sollten diese Themen unter `ThemeWithoutData` gelistet werden. Dann gibt die Kantone (AI, BS, LU, NW, OW, TG, UR), die zusätzlich (oder nur) bestehende Themen in keinem der drei &laquo;Themen&raquo; im Inhaltsverzeichnis auflisten. So gibt es z.B. in keinem dieser Kantone eine Nutzungsplanung (`ch.Nutzungsplanung`). Sondern es gibt das kantonale Derivat davon (`ch.KT.xxxxx`). Das dünkt mich falsch. Wenn man die Nutzungsplanung unterteilen will, sollte das mit Subthemen gemacht werden.
+
+Kommen wir zu den exotischeren Fällen:
+
+Im Kanton Aargau scheint es im Kontext des ÖREB-Katasters keine NBIdent zu geben. Im Extract steht `<data:IdentDN>N/A</data:IdentDN>`. Wenn ich den (hoffentlich korrekten) NBIdent aus den Daten der amtlichen Vermessung verwende, funktioniert der GetEGRID-Request jedoch trotzdem nicht.
+
+Im Kanton Appenzell Innerrhoden funktionieren https://oereb.ai.ch/ktai/wsgi/oereb/extract/xml/?EGRID=CH967759413925&WITHIMAGES=true[Aufrufe] mit `WITHIMAGES=true` nicht. 
+
+Im Kanton Freiburg werden beim https://geo.fr.ch/RDPPF_ws/RdppfSVC.svc/getegrid/xml/?EN=2578478,1183785&GEOMETRY=true[GetEGRID-Aufruf] mit `GEOMETRY=true` keine Geometrie zurückgeliefert. Im Kanton Basel-Stadt funktioniert ein Aufruf mit `GEOMETRY=true` weder bei https://api.oereb.bs.ch/getegrid/xml/?EN=2612855,1267223&GEOMETRY=true[GetEGRID] noch beim https://api.oereb.bs.ch/extract/xml/?EGRID=CH356489796755&GEOMETRY=true[Extract]. In beiden Fällen werden Fehler zurückgeliefert.
+
+Der Kanton Uri verwendet konsequent https://prozessor-oereb.ur.ch/oereb/getegrid/xml/?EN=2694124,1180546&GEOMETRY=true[keine LV95-Koordinaten] in den Geometrien, sondern Pseudo-Mercator (EPSG:3857). Ich bin mir nicht sicher, ob das überhaupt irgendwo explizit geregelt ist. Aber man darf schon davon ausgehen, dass man LV95 ausspucken sollte. Zudem im https://prozessor-oereb.ur.ch/oereb/capabilities/xml[Capabilities-Dokument] auch der Kanton Uri dies so bestätigt.
+
+Der Kanton Zürich weist das `Limit`-Element beim https://maps.zh.ch/oereb/v2/getegrid/xml/?EN=2683914,1248184&GEOMETRY=true[GetEGRID-XML] dem falschen Namespace zu, was zu Schemakonformitätsfehlern führt.
+
+Der Kanton Luzern liefert leider immer https://svc.geo.lu.ch/oereb/extract/xml/?EGRID=CH695089003582&WITHIMAGES=false[eingebettete Bilder] mit, auch wenn er dies explizit nicht sollte. Dafür fehlt der Verweis auf den WMS. Das ist sehr ärgerlich und wahrscheinlich der mühsamste Fehler. Die Schnittstelle wird so ad absurdum geführt: Die Anfragezeit ist deutlich länger (weil ja die Bilder produziert werden müssen) und für Aussenstehende ist der Dienst unbrauchbar, weil die WMS-Referenzen fehlen. Man kann keinen dynamischen Auszug bedienen. Ein Schelm wer Böses denkt.
+
+Ein anderes Sorgenkind ist der Kanton Wallis: Er leitet die Anfragen konsequent mit 307 (Temporary Redirect) weiter. Der Grund ist, soweit ich das nachvollziehen kann, der &laquo;trailing slash&raquo; im Pfad der Url: `.../getegrid/xml/?EN=2643445,1130616`. Ein solcher Request wird zu `.../getegrid/xml?EN=2643445,1130616` weitergeleitet (ohne den letzten Slash). Ich finde das nicht ein gutes Vorgehen: In der Weisung gibt es explizit eine Weiterleitung (zum dynamischen Auszug). D.h. Weiterleitungen haben eine gewisse Semantik. Ein Anwender der Schnittstelle muss seinen HTTP-Client nun so konfigurieren, dass er für die statischen Auszüge weiterleitet (Browser macht das automatisch, `curl` nicht), wahrscheinlich aber für den dynamischen Auszug nicht, weil das sowieso anders gehabt werden muss. Als weiteres Ungemach wartet dann eine https://rdppfvs.geopol.ch/getegrid/xml?EN=2643445,1130616&GEOMETRY=true[XML-Datei] _ohne_ Namespaces und _ohne_ Geometrien. Die https://rdppfvs.geopol.ch/extract/xml?EGRID=CH595290323059[WMS-Referenzen] zeigen auf ArcGIS-REST-Services und nicht auf WMS.
+
+Manchmal kommt es vor, dass ein Request nicht funktioniert. Entweder ist der Dienst noch nicht wirklich stabil oder der Hund liegt bei mir begraben. Klar ist, dass ich keine Retries mache. Das muss ich beobachten.
+
+Fehler in der Analyse bitte melden.

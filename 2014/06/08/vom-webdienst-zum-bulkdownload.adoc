@@ -1,0 +1,43 @@
+---
+= Vom Webdienst zum Bulkdownload
+Stefan Ziegler
+2014-06-08
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: Downloaddienst,Webdienst,Bulkdownload,WFS,OGR,GeoPackage,QGIS,Amtliche Vermessung
+:idprefix:
+---
+Chris Herwig https://www.mapbox.com/blog/trouble-with-geoportals/[erkennt] drei Hauptgruppen von Open Government Daten Benutzer:
+
+1. Gelegenheitsuser
+2. Benutzer, die mittels einer API Zugriff auf die Daten wünschen.
+3. &laquo;Bulk&raquo;-Datenuser: Diese User wollen grosse Datenmengen (und auch komplette Datensätze) herunterladen.
+
+Ein möglicher technischer Umsetzungsansatz ist das Verbinden von Gruppe 2 und 3. Der Webdienst von Gruppe 2 wird verwendet, um die vorgefertigten Datensätze für Gruppe 3 herzustellen.
+
+Anlass für das Rumspielen war ebenfalls das neue Geodatenformat http://sourcepole.ch/assets/2013/6/13/fossgis13_geopackage.pdf[_Geopackage_], das seit http://trac.osgeo.org/gdal/wiki/Release/1.11.0-News[Version 1.11] in GDAL/OGR unterstützt wird. Da QGIS ebenfalls GDAL/OGR einsetzt, wird das Datenformat auch in QGIS unterstützt.
+
+Als Webdienst wird der http://www.catais.org/wfs/mopublic?SERVICE=WFS&REQUEST=GetCapabilities[MOpublic-WFS] verwendet. Das Herstellen der einzelnen Datensätze/Geopackages übernimmt ein kleines Pythonskript:
+
+[source,python,linenums,indent=0]
+----
+include::mopublic2gpkg.py[]
+----
+
+*Zeile 16 - 24*: Es werden zuerst alle Layernamen des WFS in eine Liste geschrieben. Diese Layer werden später gemeindeweise angefordert und als GeoPackage gespeichert.
+
+*Zeile 27 - 28*: Ein weiterer WFS liefert die neuen Datenlieferungen (Gemeinden, die heute Nacht geliefert wurden).
+
+*Zeile 30 - 49*: Die Layer werden nun gemeindeweise angefordert und pro Gemeinde in eine GeoPackage-Datei gespeichert.
+
+OGR hat eine Methode `layer.SetAttributeFilter("gem_bfs = 2549")`, die Datensätze nach Attribute filtern kann. Dies funktioniert beim OGR-WFS-Treiber entweder auf der Serverseite (bevorzugt) oder auf der Klientenseite. Da QGIS-Server (hier als WFS-Server eingesetzt) in der GetCapabilities-Antwort die &laquo;LogicalOperators&raquo; http://osgeo-org.1560.x6.nabble.com/gdal-dev-WFS-driver-and-filtering-td5144594.html[nicht auflistet], sie aber versteht, verwendet OGR nur das klientenseitige Filtern. Das hat zur Folge, dass zuerst immer sämtliche Daten vom Server geholt werden müssen. Um dies zu verhindern, kann der Filter direkt in der URL angegeben werden (Zeile 41 und 44/45).
+
+*Zeile 55 - 69*: Nach dem gemeindeweisen Erstellen der GeoPackages wird ein GeoPackage für den ganzen Kanton Solothurn erstellt.
+
+_Funktionierts?_
+
+Das Skript lokal ausgeführt braucht circa 1.5 Stunden für das Erstellen sämtlicher 109 Gemeinden. Das Skript auf dem gleichen Server ausgeführt, auf dem der WFS läuft, dauert länger (circa 2.5 Stunden). Der lokale Rechner hat im Gegensatz zum Server eine SSD. Eventuell kann das ein Flaschenhals sein. Interessanterweise macht die kürzere Downloadzeit das nicht wett.
+
+Laden, Zoomen und Pannen funktioniert in QGIS 2.3 (kompiliert mit GDAL/OGR 2.0.0dev) tadellos und sehr schnell. Einzig das Scrollen in der Attributtabelle ist einiges zäher und käsiger als mit Postgis.
+
+Die Daten können http://www.catais.org/geodaten/ch/so/kva/av/mopublic/gpkg/lv03/d/[hier] heruntergeladen werden.

@@ -1,0 +1,95 @@
+---
+= INTERLIS leicht gemacht #36 - Mapping rules matter und weitere Performancebeobachtungen
+Stefan Ziegler
+2023-05-14
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,Spring Boot,STAC
+:idprefix:
+---
+Ich bin zur Zeit am https://github.com/edigonzales/sodata-stac[Entwickeln einer Anwendung], welche die Geodaten des Kantons als https://stacspec.org[STAC-Katalog] bereitstellt. Im Prinzip ist sie in einer ersten, einfachen Form fertig, nur konnte ich sie bei uns noch nicht in Betrieb nehmen, weil der OPTIONS-Request in der Firewall gesperrt ist. Dieser wird benötigt, wenn der STAC-Browser unseren Katalog anzapfen will. Was bei uns aufgrund der Umstände eine Woche geht, dauert bei Digitalocean eine Stunde:
+
+- JSON: +++<s>https://sogis-sodata-stac-fvxwq.ondigitalocean.app/catalog.json</s>+++ https://data.geo.so.ch/stac/catalog.json
+- STAC-Browser: +++<s>https://radiantearth.github.io/stac-browser/#/external//sogis-sodata-stac-fvxwq.ondigitalocean.app/catalog.json?.language=en</s>+++ https://radiantearth.github.io/stac-browser/#/external//data.geo.so.ch/stac/catalog.json?.language=en
+
+Als Input dient mir die XML-Datei, welche aus unserer Metadatenbank exportiert wird. Die erste Frage, die sich mir stellte: Wie kommen die Daten in eine Datenbank? Am einfachsten schien mir der Weg über ein INTERLIS-Modell. Ich schreibe ein Modell, das sehr nahe an der STAC-Spezifikation ist (JSON-Schemas) und bringe mit XSLT die XML-Datei in die korrekte Form. Anschliessend importiere ich die Daten mit `ili2pg` in eine PostgreSQL-Datenbank. Den Ansatz verwenden wir übrigens auch für die eCH-Objektwesen-Meldungen. Die kommen ebenfalls in einer XML-Datei daher und müssten mit einer 1:1-Schnittstelle importiert werden. Verstehe wer will.
+
+Mein work-in-progress https://geo.so.ch/models/AGI/SO_AGI_STAC_20230426.ili[INTERLIS-STAC-Datenmodell] ist sehr einfach und besteht aus einer Klasse. In der Klasse gibt es Attribute, die wiederum aus Listen von Strukturen bestehen: So enthält eine &laquo;Collection&raquo; ein oder mehrere &laquo;Items&raquo;.
+
+Beim Entwickeln habe ich eine XTF-Datei verwendet, die drei Collections enthält. Der Import in die Datenbank ging sehr schnell, so dass es nicht störte, dass dies bei jedem live reload (d.h. nach jeder Codeänderung) gemacht wurde. Als es darum ging das System mit einer kompletten XTF-Datei zu testen, war ich verwirrt. Wir haben 93 Collections, der Import ging aber gefühlt ewig. Ich kam aus dem Staunen nicht mehr raus. Erst die `--trace`-Option hat mir geholfen. Ich sah sehr viele SQL-Befehle und dann ging mir ein Licht auf: Obwohl ich nur 93 Objekte in die Datenbank importieren muss, sind viel mehr SQL-Inserts notwendig. Es gibt insgesamt circa 70'000 Items. Items sind im INTERLIS-Datenmodell als Struktur modelliert. Strukturen werden standardmässig als Tabelle in der Datenbank abgebildet. Neben den Items sind noch viele weitere Attrbute als Strukturen modelliert. Insbesondere schmerzen natürlich Attribute der Item-Struktur, weil diese  wiederum sehr viele separate Insert-Statements auslösen (weil es viele Items gibt). 
+
+Was machen? JSON to the rescue. Ili2db hat die Fähigkeit Strukturen nicht als Tabellen in der Datenbank abzubilden, sondern als JSON-Objekt. Die JSON-Objekte sind in der &laquo;Mutter-Tabelle&raquo; in einem JSON-Feld (oder je nach Datenbank: Text-Feld) gespeichert. Wichtig scheint mir der Hinweis, dass es mit dieser Abbildungvariante für Strukturen keinen Informationsverlust gibt. Die Daten können auch wieder exportiert werden. Damit die Strukturen als JSON-Objekt abgebildet werden, muss das Attribut im Datenmodell entsprechend annotiert werden:
+
+[source,xml,linenums]
+----
+STRUCTURE Item = 
+    Identifier : MANDATORY TEXT;
+    Title : TEXT;
+    Date: MANDATORY FORMAT INTERLIS.XMLDate "1990-1-1" .. "2100-12-31";
+    !!@ili2db.mapping=JSON
+    Boundary : BoundingBox;
+    Geometry : MTEXT; !! FIXME 
+    !!@ili2db.mapping=JSON
+    Assets : BAG {1..*} OF Asset;
+END Item;
+----
+
+Einige Attribute hatte ich bereits annotiert gehabt. Nur die BoundingBox des Items nicht. Und allein dieses führte zur gefühlt ewigen Importdauer. Die nachfolgende Tabelle zeigt die Dauer eines Imports in Abhängigkeit der Strukturabbildungsregeln (ohne JSON, alles mit JSON, alles mit JSON ausser Items):
+
+[cols="1,1"]
+|===
+|Abbildungsregel |Dauer (mins:secs)
+
+|ohne JSON
+|9:39
+|alles mit JSON
+|0:10
+|alles mit JSON (ausser Items)
+|2:45
+|===
+
+Die Zeiten sind mit Vorsicht zu geniessen und würden in der Produktion nicht ganz so extrem ausfallen. Die Tests habe ich auf macOS mit einer gedockerten Datenbank gemacht. In dieser Kombi ist Datenbank-I/O relativ lahm.
+
+Wie erwähnt hatte ich bereits einige der Strukturen bewusst als JSON-Objekt abbilden lassen. Der Grund dafür war, dass ich mich entschieden hatte, sämtliche Logik zum Herstellen der JSON-Dateien (gemäss STAC-Spezifikation) in der Datenbank mit den https://www.postgresql.org/docs/15/functions-json.html[PostgreSQL-JSON-Funktionen] zu machen. Zu dieser Thematik gibt es https://www.crunchydata.com/blog/generating-json-directly-from-postgres[interessante] https://blog.jooq.org/stop-mapping-stuff-in-your-middleware-use-sqls-xml-or-json-operators-instead/[Artikel]. Die Businesslogik in der Anwendung selber ist nun praktisch inexistent. Es werden nur Controller benötigt.
+
+Weil die Anzahl der DB-Queries dermassen matchentscheidend ist, habe ich ein paar weitere Vergleiche gemacht. Wenn die Anzahl der Queries wichtig ist, ist entsprechend die Geschwindigkeit der Query auch entscheidend. Weniger die Dauer direkt auf dem DB-Server, sondern die Dauer vom Absetzen des Requests in der Anwendung bis zur Antwort. Dazu habe ich bei Digitalocean eine gemanagte Datenbank erstellt und verglich wie lange ein Import meiner 93 Objekte dauerte. Als Abbildungsregel habe ich &laquo;alles mit JSON (ausser Items)&raquo; verwendet. Einmal importierte ich die Daten vom lokalen Rechner und einmal von einem Digitalocean-Server im gleichen Rechenzentrum.
+
+[cols="1,1,1"]
+|===
+|Ort | ping (ms) |Dauer (mins:secs)
+
+|lokal
+|24 
+|46:52
+|Rechenzentrum
+|0.7
+|01:51
+|===
+
+Die ping-Spalte zeigt die Dauer eines PING-Requests. Unterschied ist krass aber ziemlich plausibel. Netzwerkrequests sind halt einfach teuer. Dazu ein https://blog.jooq.org/the-cost-of-jdbc-server-roundtrips/[guter Artikel].
+
+Bei `ili2db` kommt noch hinzu, dass für jeden Record, der in die Datenbank geschrieben wird, ein `SELECT nextval($1)` gemacht wird. De fakto eine Verdoppelung der Requests.
+
+Es gibt in `ili2db` die Option `--importBatchSize rows`. Mit diesem können die INSERT-Befehle gebündelt werden (analog dazu `--exportFetchSize rows`). Vergleich mit/ohne batch-Option, jeweils vom lokalen Rechner zur Digitalocean-DB:
+
+[cols="1,1"]
+|===
+|importBatchSize |Dauer (mins:secs)
+
+|n/a
+|69:25
+|5000
+|35:14
+|===
+
+Die Zeiten sind nicht mit den Tests (lokal vs Rechenzentrum) vergleichbar, da ich eine andere Internetverbindung verwendet habe.
+
+Conclusion (aus der Sicht eines möglichst schnellen Imports):
+
+- Es muss eine sehr schnelle (latenzarme) Verbindung zwischen `ili2db` und der Datenbank vorhanden sein.
+- Falls möglich sollten Strukturen mit JSON abgebildet werden.
+- Die Requests sollten gebatched werden. Dies würde ich aber noch vertiefter prüfen wollen, ggf. hat das auch unter gewissen Umständen einen negativen Impact.
+- `SELECT nextval($1)`: Vielleicht hat jemand eine gute Idee.
+- Entwicklung einer &laquo;smart3Inheritance&raquo;-Methode, die Assoziationen als JSON-Objekte abbildet. 
+
+Zu &laquo;smart3Inheritance&raquo;: Keine Ahnung, ob das im grösseren Kontext sinnvoll ist und/oder gut umsetzbar ist. Wenn ich aber z.B. an eine Klasse mit einem Geometrieattribut denke, die eine Beziehung zu Dokumenten hat, könnten die Dokumente als JSON-Objekt in einem JSON-Feld in der Tabelle mit der Geometrie abgebildet werden. Ist wohl sowieso das, was man will, wenn man die Daten bloss anzeigen will (und nicht editieren will).

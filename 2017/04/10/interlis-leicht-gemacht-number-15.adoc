@@ -1,0 +1,215 @@
+---
+= Interlis leicht gemacht #15
+Stefan Ziegler
+2017-04-10
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,ilivalidator
+:idprefix:
+---
+Im letzten http://blog.sogeo.services/blog/2017/02/13/interlis-leicht-gemacht-number-14.html[Beitrag] zeigte ich wie man in https://github.com/claeis/ilivalidator[`ilivalidator`] eigene, zusätzliche Constraints definieren kann und eigene Java-Funktionen schreiben kann. Beides hat zum Ziel, dass man neben der eigentlichen Modellprüfung zusätzliche Prüfungen durchführen kann. Von der Version 0.10.0 zur Version https://github.com/claeis/ilivalidator/releases[1.0.0] hat sich da noch einiges getan. Und eines vorweg: es ist ziemlich genial geworden.
+
+Ich habe den fast gleichen http://blog.sogeo.services/data/interlis-leicht-gemacht-number-15/control_points.xtf[Test-Rumspiel-Datensatz] wie beim letzten Mal verwendet (ein paar Fixpunkte). Einzig den Modellnamen habe ich leicht angepasst: `AVLight`. Das http://blog.sogeo.services/data/interlis-leicht-gemacht-number-15/AVLight.ili[Modell] sieht jetzt so aus:
+
+[source,java,linenums]
+----
+INTERLIS 2.3;
+
+MODEL AVLight (en) AT "http://sogeo.services"
+  VERSION "2017-02-11" =
+
+  IMPORTS UNQUALIFIED INTERLIS;
+  IMPORTS UNQUALIFIED GeometryCHLV95_V1;
+
+    UNIT
+      Grads = 200.0 / PI [rad];
+      SquareMeters [m2] = (m * m);
+
+    DOMAIN
+
+      Altitude = -200.000 .. 5000.000 [m];
+      Rotation = 0.0 .. 399.9 [Grads];
+      Accuracy = 0.0 .. 700.0;
+
+   TOPIC Control_points =
+      OID AS INTERLIS.UUIDOID;
+
+      CLASS Control_point =
+        Category : MANDATORY 0..5; 
+        IdentND : MANDATORY TEXT*12;
+        Number : MANDATORY TEXT*12;
+        Geometry : MANDATORY Coord2;
+        Plan_accuracy : Accuracy;
+        Geom_alt : Altitude;
+        Alt_accuracy : Accuracy;
+        Mark : MANDATORY 0..8; 
+        State_of : XMLDateTime;
+        FOSNr : 0 .. 9999;
+      UNIQUE IdentND, Number;
+      END Control_point;
+
+    END Control_points;
+  
+  END AVLight.
+----
+
+Wenn ich jetzt einen &laquo;no-frills&raquo; ilivalidator-Aufruf mache, meldet es mir bereits einen Fehler. Eine Höhe ist viel zu gross und entspricht nicht den Vorgaben des Modelles. 
+
+Wenn ich nun weiss, dass die Nummern der Fixpunkte bei uns *immer* nur acht Zeichen lang sind, kann/muss ich einen zusätzlichen Contraint definieren. Beim letzten Mal habe ich diesen Contraint mit der vordefinierten INTERLIS-Funktion `INTERLIS.len()` direkt in das Original-Modell geschrieben. Das geht natürlich, ist aber nicht sonderlich elegant und man müsste immer so etwas wie eine Schattenkopie des wirklichen Originals vorliegen haben.
+
+Eleganter geht es mit Views. INTERLIS-Views sind mir soweit gänzlich unbekannt und die Syntax auch nicht nicht wirklich geläuft, aber für etwas gibt es ja das http://interlis.ch/interlis2/docs23/ili2-refman_2006-04-13_d.pdf[Referenzhandbuch] und die https://github.com/claeis/ilivalidator/blob/master/docs/ilivalidator.rst[ilivalidator-Dokumentation]. Man schreibt sich jetzt also ein `AVLight_Check`-Modell und definiert dort die Views mit den zusätzlichen Constraints:
+
+[source,java,linenums]
+----
+INTERLIS 2.3;
+
+CONTRACTED MODEL AVLight_Check (en) AT "http://sogeo.services"
+  VERSION "2017-04-07" =
+  IMPORTS AVLight;
+ 
+  VIEW TOPIC Control_points_Check =
+  DEPENDS ON AVLight.Control_points;
+
+    VIEW v_Control_point
+    	PROJECTION OF AVLight.Control_points.Control_point;
+    =
+      ALL OF Control_point;
+      MANDATORY CONSTRAINT (INTERLIS.len (Number)) == 8;
+    END v_Control_point;
+    
+  END Control_points_Check;
+
+END AVLight_Check.
+----
+
+Um die Prüfung mit dem zusätzlichen Constraint durchzuführen, braucht es einzig noch einen Eintrag in der http://blog.sogeo.services/data/interlis-leicht-gemacht-number-15/AVLight.toml[Konfigurationsdatei] `AVLight.toml`:
+
+[source,java,linenums]
+----
+["PARAMETER"]
+additionalModels="AVLight_Check"
+----
+
+So wird `ilivalidator` mitgeteilt, dass es ein weiteres zu berücksichtigendes Modell gibt. Der Aufruf erfolgt mit dem `--config`-Parameter und liefert folgenden zusätzlichen Fehler:
+
+[source,java,linenums]
+----
+Info: second validation pass...
+Info: validate role references of AVLight.Control_points.Control_point...
+Error: line 65: AVLight.Control_points.Control_point: tid a01868e1-11fd-4c7c-a109-341b778b4d44: Mandatory Constraint AVLight_Check.Control_points_Check.v_Control_point.Constraint1 is not true.
+Info: ...validation failed
+----
+
+Schön. Nur nicht sonderlich leserlich. Mit Metattributen `!!@...` (Zeilen 14 und 15) kann man nun einerseits den Constraint mit einem Namen versehen und auch eine für den Menschen lesbare Fehlermeldung ausgeben:
+
+[source,java,linenums]
+----
+INTERLIS 2.3;
+
+CONTRACTED MODEL AVLight_Check (en) AT "http://sogeo.services"
+  VERSION "2017-04-07" =
+  IMPORTS AVLight;
+ 
+  VIEW TOPIC Control_points_Check =
+  DEPENDS ON AVLight.Control_points;
+
+    VIEW v_Control_point
+    	PROJECTION OF AVLight.Control_points.Control_point;
+    =
+      ALL OF Control_point;
+      !!@ name = Punktnummer_Laenge
+      !!@ ilivalid.msg = "Laenge der Punktenummer {Number} ist falsch. Erwartet wird 8."      
+      MANDATORY CONSTRAINT (INTERLIS.len (Number)) == 8;
+    END v_Control_point;
+    
+  END Control_points_Check;
+
+END AVLight_Check.
+----
+
+Die Metattribute müssen vor den betroffenen Constraint platziert werden. Das Ergebnis ist definitiv informativer:
+
+[source,java,linenums]
+----
+Info: second validation pass...
+Info: validate role references of AVLight.Control_points.Control_point...
+Error: line 65: AVLight.Control_points.Control_point: tid a01868e1-11fd-4c7c-a109-341b778b4d44: Laenge der Punktenummer 1066703099 ist falsch. Erwartet wird 8.
+Info: ...validation failed
+----
+
+Wenn ich jetzt Dinge prüfen will, die ich nicht mehr mit den INTERLIS-Standardfunktion umsetzen kann, muss ich selber in die Java-Tasten hauen. Grundsätzlich gilt weiterhin, dass man ein https://github.com/claeis/iox-ili/blob/master/src/main/java/ch/interlis/iox_j/validator/InterlisFunction.java[Java-Interface] implementieren muss. Bei uns beginnen alle BfS-Nummern mit einer &laquo;2&raquo;. Jetzt kann ich also eine &laquo;SubText&raquo;-Funktion schreiben, die von einem String einen Teil extrahiert und mit einer &laquo;2&raquo; vergleicht und das Ganze in einen MandatoryConstraint packen:
+
+[source,java,linenums]
+----
+MANDATORY CONSTRAINT SubText(FOSNr,"0","1") == "2";
+----
+
+Disclamer: Die Methode habe ich gewählt, weil sie bereits aus Testzwecken im https://github.com/claeis/iox-ili/blob/master/src/test/java/ch/interlis/iox_j/validator/SubText.java[iox-ili-Code] vorhanden ist.
+
+Neu müssen die - nennen wir sie mal - Custom Functions eine Methode `getQualifiedIliName()` implementieren. Der Rückgabewert ist ein qualifizierter Name, wie man die Methode in Modellen ansprechen kann. Dafür fällt in der Deklaration im Modell das Metaattribut weg. Zuerst sah ich die Eleganz nicht und dachte, dass man ja jetzt gleiche Methoden für verschiedene Modelle schreiben muss. Aber weit gefehlt. Als man es mir dann erklärte, dämmerte es: Man (z.B. eine Organisation, ein Checkservice-Anbieter) erstellt für die Deklaration der Methoden ein eigenes INTERLIS-Modell, das man - analog wie das `AVLight`-Modell - jeweils in das Check-Modell importiert. Daher ist der qualifizierte Name https://git.sogeo.services/stefan/ilivalidator-extensions/src/master/src/ilivalidator-extensions/src/main/java/org.catais.ilivalidator.ext/MySubTextIoxPlugin.java[meiner Implementierung] der SubText-Methode `SO_FunctionsExt.mySubText`. `SO_FunctionsExt` ist das Modell in dem einzig meine Funktion deklariert wird.
+
+Die Methode wird jetzt kompiliert und als JAR-Datei in einen Ordner kopiert. Standardmässig lädt `ilivalidator` seit Version 1.0.0 die Custom Functions aus dem `plugins`-Verzeichnis (muss erstellt werden) innerhalb der Applikation. Dies kann aber mit dem Parameter `--plugins` übersteuert werden. Bei mir hat das Laden meiner SubText-Funktion nicht auf Anhieb funktioniert. Ich habe das Gefühl, dass im iox-ili-Code noch ein https://github.com/claeis/ilivalidator/issues/47[Fehler] versteckt ist. Erst eine zusätzliche Zeile und das anschliessende Kompilieren von _iox-ili_ und kopieren der Bibliothek in das `libs`-Verzeichnis von `ilivalidator` hat die Custom Functions gefunden (resp. eben die Klasse geladen).
+
+Anschliessend muss ich das erwähnte http://blog.sogeo.services/data/interlis-leicht-gemacht-number-15/SO_FunctionsExt.ili[`SO_FunctionsExt`-Modell] erstellen:
+
+[source,java,linenums]
+----
+INTERLIS 2.3;
+
+CONTRACTED MODEL SO_FunctionsExt (en) AT "http://sogeo.services"
+  VERSION "2017-04-09" =
+
+  FUNCTION mySubText (text: TEXT; from: NUMERIC; to: NUMERIC): TEXT;
+
+END SO_FunctionsExt.
+----
+
+Ebenfalls leicht anpassen muss ich das `AVLight_Check`-Modell:
+
+[source,java,linenums]
+----
+INTERLIS 2.3;
+
+CONTRACTED MODEL AVLight_Check (en) AT "http://sogeo.services"
+  VERSION "2017-04-07" =
+  IMPORTS AVLight;
+  IMPORTS SO_FunctionsExt;
+ 
+  VIEW TOPIC Control_points_Check =
+  DEPENDS ON AVLight.Control_points;
+
+    VIEW v_Control_point
+    	PROJECTION OF AVLight.Control_points.Control_point;
+    =
+      ALL OF Control_point;
+      !! Constraint name will not be shown if ilivalid.msg is defined!?
+      !!@ name = Punktnummer_Laenge
+      !!@ ilivalid.msg = "Laenge der Punktenummer {Number} ist falsch. Erwartet wird 8."
+      MANDATORY CONSTRAINT (INTERLIS.len (Number)) == 8;
+      !!@ name = BfS_Nummer_erste_Ziffer
+      !!@ ilivalid.msg = "Erste Ziffer der BfS-Nummer {FOSNr} ist falsch. Erwartet wird 2."
+      MANDATORY CONSTRAINT SO_FunctionsExt.mySubText(FOSNr,"0","1") == "2";
+    END v_Control_point;
+    
+  END Control_points_Check;
+
+END AVLight_Check.
+----
+
+In Zeile 6 wird das &laquo;Funktions-Deklarations-Modell&raquo; importiert. Damit hat sich es erledigt. Natürlich muss man noch den Constraint selber ausformulieren und falls gewünscht die passende Fehlermeldung dazu (Zeilen 19 - 21). 
+
+Der ilivalidator-Aufruf liefert korrekterweise einen Fehler:
+
+[source,java,linenums]
+----
+Info: second validation pass...
+Info: validate role references of AVLight.Control_points.Control_point...
+Error: line 65: AVLight.Control_points.Control_point: tid a01868e1-11fd-4c7c-a109-341b778b4d44: Laenge der Punktenummer 1066703099 ist falsch. Erwartet wird 8.
+Error: line 82: AVLight.Control_points.Control_point: tid 2d8fef45-cc65-4305-a59a-5e046afd2fcb: Erste Ziffer der BfS-Nummer 4479 ist falsch. Erwartet wird 2.
+Info: ...validation failed
+----
+
+Um eigene Bedingungen zu formulieren mit oder ohne eigenen Tests muss ich in erster Linie nichts Anderes verstehen als INTERLIS. Keine zusätzliche INTERLIS-Validierungssyntax oder ähnliches. Ich brauche keinen neuen Skriptsyntaxparser/-validator, denn den gibt es ja bereits: den https://sourceforge.net/projects/umleditor/files/ili2c/[INTERLIS-Compiler]. Klar, will ich eigene Funktionen schreiben, muss man ein wenig Java beherrschen. Aber that's it. Die Verwaltung der zusätzlichen Check-Modelle? Gelöst, nennt sich http://www.interlis.ch/models/ModelRepository.pdf[INTERLIS-Modellablage] und hat sich etabliert. 
+
+Sämtliche Daten finden sich http://blog.sogeo.services/data/interlis-leicht-gemacht-number-15/[hier]. Das Git-Repo mit meiner Custom Function gibt es https://git.sogeo.services/stefan/ilivalidator-extensions[hier].
+

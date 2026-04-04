@@ -1,0 +1,219 @@
+---
+= INTERLIS leicht gemacht #35 - Automatisierung steigern mit dem Daten-Repository
+Stefan Ziegler
+2023-05-10
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,ili2db,Java,Spring Boot
+:idprefix:
+---
+Seit https://github.com/claeis/ili2db[`ili2db`] 4.10.0 gibt es neue Möglichkeiten seine Prozesse nochmals einfacher zu automatisieren: Man kann mit einem einzigen ili2db-Befehl Daten aus einem Daten-Repository herunterladen und in eine Datenbank importieren. Das Daten-Repository ist das Äquivalent zum Modell-Repository: Es werden beliebige Daten in strukturierter Form bereitgestellt. Die strukturierte Form ist in diesem Fall natürlich wieder eine INTERLIS-Transferdatei. Im Rahmen unseres neuen https://data.geo.so.ch/[Datenbezuges] habe ich ein solches https://data.geo.so.ch/ilidata.xml[Daten-Repository] erstellt. Die oberste Ebene eines Daten-Repositories besteht aus `DatasetMetadata`-Objekten. Unsere Hoheitsgrenzen als Beispiel:
+
+[source,xml,linenums]
+----
+<DatasetIdx16.DataIndex.DatasetMetadata TID="33">
+    <id>ch.so.agi.av.hoheitsgrenzen</id>
+    <version>current</version>
+    <model>
+        <DatasetIdx16.ModelLink>
+        <name>SO_Hoheitsgrenzen_Publikation_20170626</name>
+        <locationHint>https://geo.so.ch/models</locationHint>
+        </DatasetIdx16.ModelLink>
+    </model>
+    <epsgCode>2056</epsgCode>
+    <publishingDate>2023-05-13</publishingDate>
+    <owner>https://agi.so.ch</owner>
+    <boundary>
+        <DatasetIdx16.BoundingBox>
+        <westlimit>7.340693492284002</westlimit>
+        <southlimit>47.074299169536175</southlimit>
+        <eastlimit>8.03269288687543</eastlimit>
+        <northlimit>47.50119805032911</northlimit>
+        </DatasetIdx16.BoundingBox>
+    </boundary>
+    <title>
+        <DatasetIdx16.MultilingualText>
+        <LocalisedText>
+            <DatasetIdx16.LocalisedText>
+            <Language>de</Language>
+            <Text>Hoheitsgrenzen</Text>
+            </DatasetIdx16.LocalisedText>
+        </LocalisedText>
+        </DatasetIdx16.MultilingualText>
+    </title>
+    <shortDescription>
+        <DatasetIdx16.MultilingualMText>
+        <LocalisedText>
+            <DatasetIdx16.LocalisedMText>
+            <Language>de</Language>
+            <Text><![CDATA[Als Hoheitsgrenzen werden die Landesgrenzen, Kantonsgrenzen und die Grenzen der politischen Gemeinden bezeichnet. Die Hoheitsgrenzen liegen auf Grundstücksgrenzen. Sie sind Bestandteil der amtlichen Vermessung.]]></Text>
+            </DatasetIdx16.LocalisedMText>
+        </LocalisedText>
+        </DatasetIdx16.MultilingualMText>
+    </shortDescription>
+    <keywords>Landesgrenzen,Kantonsgrenzen,Gemeindegrenzen,Bezirksgrenzen,schöne Steine,Inventar Hoheitsgrenzsteinen</keywords>
+    <technicalContact>https://agi.so.ch</technicalContact>
+    <furtherInformation>https://so.ch/verwaltung/bau-und-justizdepartement/amt-fuer-geoinformation/amtliche-vermessung/hoheitsgrenzen/</furtherInformation>
+    <knownWMS>
+        <DatasetIdx16.WebService_>
+        <value>https://geo.so.ch/api/wms</value>
+        </DatasetIdx16.WebService_>
+    </knownWMS>
+    <knownWFS>
+        <DatasetIdx16.WebService_>
+        <value>https://geo.so.ch/api/wfs</value>
+        </DatasetIdx16.WebService_>
+    </knownWFS>
+    <furtherWS>
+        <DatasetIdx16.WebService_>
+        <value>https://geo.so.ch/api/data/v1</value>
+        </DatasetIdx16.WebService_>
+    </furtherWS>
+    <knownPortal>
+        <DatasetIdx16.WebSite_>
+        <value>https://geo.so.ch/map?l=ch.so.agi.bezirksgrenzen</value>
+        </DatasetIdx16.WebSite_>
+    </knownPortal>
+    <files>
+        <DatasetIdx16.DataFile>
+        <fileFormat>application/interlis+xml;version=2.3</fileFormat>
+        <file>
+            <DatasetIdx16.File>
+            <path>files/ch.so.agi.av.hoheitsgrenzen.xtf</path>
+            </DatasetIdx16.File>
+        </file>
+        </DatasetIdx16.DataFile>
+    </files>
+</DatasetIdx16.DataIndex.DatasetMetadata>
+----
+
+In diesem Kontext interessant sind die Attribute `id` und `files`. Das `id`-Attribut benötige ich später zum eindeutigen Ansprechen des Datensatzes, den ich bei mir importieren will. Das `files`-Attribut zeigt auf die Datei (resp. Dateien), welche zu diesem Datensatz vorhanden sind. Das `path`-Attribut ist zwingend ein relativer Pfad (siehe https://models.interlis.ch/core/DatasetIdx16.ili[dazugehöriges Datenmodell]). D.h. man kann nicht auf irgendeine Datei auf irgendeinem Server zeigen. Sondern die Datei muss auf dem gleichen Server liegen, wie die `ilidata.xml`-Datei. Dies ist bewusst so gewählt: Damit wird verhindert, dass man auf etwas zeigt, das man nicht unter Kontrolle hat.
+
+Bevor ich die Datei importieren kann, erstelle ich in einem separaten Schritt das Schema mit den leeren Tabellen:
+
+[source,xml,linenums]
+----
+java -jar ili2pg-4.11.0.jar --dbhost localhost --dbport 54321 --dbdatabase pub --dbusr ddluser --dbpwd ddluser --dbschema agi_hoheitsgrenzen_pub_v1 --models SO_Hoheitsgrenzen_Publikation_20170626 --nameByTopic --defaultSrsCode 2056 --createFk --createFkIdx --createMetaInfo --createUnique --createNumChecks  --createTextChecks --createDateTimeChecks --createEnumTabs --strokeArcs --schemaimport
+----
+
+Den Datensatz aus einem Daten-Repository spreche ich beim Import über `ilidata:<id>` an:
+
+[source,xml,linenums]
+----
+java -jar ili2pg-4.11.0.jar --dbhost localhost --dbport 54321 --dbdatabase pub --dbusr ddluser --dbpwd ddluser --dbschema agi_hoheitsgrenzen_pub_v1 --models SO_Hoheitsgrenzen_Publikation_20170626 --import ilidata:ch.so.agi.av.hoheitsgrenzen
+----
+
+In der Konsole sieht man anhand der Logeinträge (`Info: search in repository <http://models.interlis.ch/> for BID <ch.so.agi.av.hoheitsgrenzen>` etc. pp.), dass `ili2pg` den Datensatz `ch.so.agi.av.hoheitsgrenzen` in den Daten-Repositories sucht und im Kanton Solothurn findet und anschliessend importiert.
+
+Das funktioniert natürlich auch mit z.B. `ili2gpkg` und mit einem Befehl, also ohne vorgängiges Anlegen des Schemas / der Tabellen:
+
+[source,xml,linenums]
+----
+java -jar ili2gpkg-4.11.0.jar --dbfile hoheitsgrenzen.gpkg --models SO_Hoheitsgrenzen_Publikation_20170626 --nameByTopic --defaultSrsCode 2056 --createFk --createFkIdx --createMetaInfo --createUnique --createNumChecks  --createTextChecks --createDateTimeChecks --createEnumTabs --strokeArcs --doSchemaImport --import ilidata:ch.so.agi.av.hoheitsgrenzen 
+----
+
+Beinahe fast schon Feenstaub. INTERLIS mal wieder dem Rest um Längen voraus.
+
+Was passiert, wenn ich Datensätze importieren will, die aus verschiedenen Dateien bestehen? Z.B. die kommunalen Nutzungsplanung:
+
+[source,xml,linenums]
+----
+<files>
+    <DatasetIdx16.DataFile>
+    <fileFormat>application/interlis+xml;version=2.3</fileFormat>
+    <file>
+        <DatasetIdx16.File>
+        <path>files/2503.ch.so.arp.nutzungsplanung.kommunal.xtf</path>
+        </DatasetIdx16.File>
+        <DatasetIdx16.File>
+        <path>files/2514.ch.so.arp.nutzungsplanung.kommunal.xtf</path>
+        </DatasetIdx16.File>
+        <DatasetIdx16.File>
+        <path>files/2463.ch.so.arp.nutzungsplanung.kommunal.xtf</path>
+        </DatasetIdx16.File>
+        <DatasetIdx16.File>
+        <path>files/2542.ch.so.arp.nutzungsplanung.kommunal.xtf</path>
+        </DatasetIdx16.File>
+        ....
+    </file>
+    </DatasetIdx16.DataFile>
+</files>
+----
+
+Es wird nur die erste Datei importiert. Scheint mir noch nicht ganz ausgereift zu sein. Hier würde sich wohl auch die Frage nach einer Unterstützung von `--dataset` stellen.
+
+Man kann nicht nur Daten in einem Daten-Repository referenzieren und bereitstellen, sondern auch Konfigurationen. Also mit welchen Parametern ein Schema angelegt werden soll. Eine solche Konfigurationsdatei (`ch.so.agi.hoheitsgrenzen.ini`) sieht für unser Beispiel so aus:
+
+[source,xml,linenums]
+----
+[ch.ehi.ili2db]
+models=SO_Hoheitsgrenzen_Publikation_20170626
+nameByTopic=true
+defaultSrsCode=2056
+createFk=true
+createFkIdx=true
+createMetaInfo=true
+createUnique=true
+createNumChecks=true
+createTextChecks=true
+createDateTimeChecks=true
+createEnumTabs=true
+strokeArcs=true
+----
+
+Der dazugehörige Eintrag in der `ilidata.xml`-Datei:
+
+[source,xml,linenums]
+----
+<DatasetIdx16.DataIndex.DatasetMetadata TID="4">
+    <id>ch.so.agi.hoheitsgrenzen_config</id>
+    <version>1</version>
+    <owner>mailto:agi@bd.so.ch</owner>
+    <categories>
+        <DatasetIdx16.Code_>
+            <value>http://codes.interlis.ch/type/metaconfig</value>
+        </DatasetIdx16.Code_>
+        <DatasetIdx16.Code_>
+            <value>http://codes.interlis.ch/model/SO_Hoheitsgrenzen_Publikation_20170626</value>
+        </DatasetIdx16.Code_>
+    </categories>
+    <files>
+        <DatasetIdx16.DataFile>
+            <fileFormat>text/plain</fileFormat>
+            <file>
+                <DatasetIdx16.File>
+                    <path>ch.so.agi.hoheitsgrenzen.ini</path>
+                </DatasetIdx16.File>
+            </file>
+        </DatasetIdx16.DataFile>
+    </files>
+</DatasetIdx16.DataIndex.DatasetMetadata>
+----
+
+Die `Code_`-Einträge sind - soweit ich die Dokumentation verstehe - freiwillig. Die Konfigurationsdatei mit den Optionen wird in den `file`-Attributen referenziert.
+
+Der ili2pg-Befehl verkürzt sich jetzt stark, da viele Optionen in der ini-Datei vorhanden sind. Weil ich für diese Konfigurationsdatei noch kein Repository habe, muss ich sie direkt ansprechen:
+
+[source,xml,linenums]
+----
+java -jar ili2pg-4.11.0.jar --dbhost localhost --dbport 54321 --dbdatabase pub --dbusr ddluser --dbpwd ddluser --dbschema agi_hoheitsgrenzen_pub_v1 --metaConfig ch.so.agi.hoheitsgrenzen.ini --schemaimport
+----
+
+Würde die ini-Datei in einem Daten-Repository liegen, müsste die metaConfig-Option um ein `ilidata` ergänzt werden: `--metaConfig ilidata:ch.so.agi.hoheitsgrenzen.ini`.
+
+Der ili2gpkg-Befehl von vorhin wird ebenfalls massiv kürzer:
+
+[source,xml,linenums]
+----
+java -jar ili2gpkg-4.11.0.jar --dbfile hoheitsgrenzen.gpkg --metaConfig ch.so.agi.hoheitsgrenzen.ini --doSchemaImport --import ilidata:ch.so.agi.av.hoheitsgrenzen 
+----
+
+Was bringt uns das nun alles?
+
+Das automatische Herunterladen und Importieren von Daten ist für Endbenutzer interessant, die regelmässig und automatisch Daten bei sich integrieren. Man muss jedoch ID des Datensatzes kennen, um von dieser Automatisierung zu profitieren, was wohl z.B. bei Lisa Liegenschaft nicht der Fall sein dürfte. Für uns wiederum könnte es für das lokale Entwickeln von Datenumbauten etc. interessant sein. Wir kennen plusminus die ID der Datensätze und können so Entwicklungsumgebungen auf Knopfdruck herstellen.
+
+Die Bereitstellung der Konfigurationsdateien für die Schemaerstellung machen wir heute bereits ähnlich, jedoch mit einem selbstgestrickten Werkzeug. Dieses können wir mit ili2pg-pur ersetzen.
+
+Daten-Repository:
+
+Das Daten-Repository stelle ich innerhalb einer https://github.com/sogis/sodata-api[Spring Boot-Anwendung] her. Zwei von drei Dateien (`ilisite.xml` und `ilimodels.xml`) sind statische Dateien und nicht interessant. Die `ilidata.xml`-Datei stelle ich beim Hochfahren der Anwendung aus einer XML-Datei her, die aus unserer Metadatenbank exportiert wird. Zu Beginn habe ich erwähnt, dass die Dateien auf dem gleichen Server liegen müssen wie die `ilidata.xml`-Datei. Hier musste ich klein wenig bescheissen. Das ist bei uns nicht der Fall und ich habe einen einfachen Proxy in die Anwendung eingebaut, welcher die Datei zuerst von einem anderen Server herunterlädt. Ein weiterer Grund für den Proxy ist der Umstand, dass die Dateien bei uns als Zipdateien abgelegt sind. Diese müssen aber als XTF-Datei vorliegen, damit es funktioniert. Dieses Entzippen hat zu einer interessanten Frage geführt: Wenn das Repository nun rege genützt würde, werden sehr viele Daten produziert beim Entzippen. Wie gehe ich damit um? Ich kann die XTF-Datei erst löschen, wenn sie vollständig an den Benutzer, der sie angefordert hat, geschickt wurde. Dann kann ich sie aber nicht mehr löschen, weil der Request fertig ist. Erste, einfache Idee war ein eingebauter Cronjob, der alle XX Minuten das Verzeichnis mit den heruntergeladenen und entzippten Daten löscht. Das fand ich aber doch nicht so prickelnd, weil man entweder viel zu oft aufräumt oder zu wenig oft. Eine meines Erachtens gute Variante ist Erweiterung der https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/core/io/InputStreamResource.html[Spring InputStreamResource-Klasse]. Diese InputStreamResource wird als Body dem Client zurückgeliefert. Man kann diese https://github.com/sogis/sodata-api/blob/main/src/main/java/ch/so/agi/sodata/CleanupInputStreamResource.java[Klasse dahingehend erweitern], indem man die `close`-Methode überschreibt und in dieser die unnötigen Dateien löscht. So kümmert sich jeder Request um seine Artefakte.

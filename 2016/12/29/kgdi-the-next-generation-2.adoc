@@ -1,0 +1,51 @@
+---
+= KGDI - The next generation #2
+Stefan Ziegler
+2016-12-29
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: KGDI,GDI,Datenintegration,Datenumbau,REST,know your gdi
+:idprefix:
+---
+Ein Thema, das uns im Kontext von http://blog.sogeo.services/blog/2016/12/24/kgdi-the-next-generation-1.html[SO!GIS 2.0] beschäftigt, sind Datenflüsse. Datenflüsse jeglicher Art. Also sowohl von aussen nach innen, von innen nach aussen und wie auch innerhalb unserer GDI selbst. Irgendwie müssen die Daten ja in unsere GDI kommen und oftmals müssen sich auch noch umgebaut werden. Darum sind es eigentlich zwei Aspekte:
+
+* Datenintegration: Nennen wir es einfach mal so, obwohl damit nicht nur die Integration von Daten in unsere GDI gemeint ist, sondern eben auch Daten aus unserer GDI exportieren.
+* Datenumbau: Wenn Daten hin- und hergeschoben werden, müssen sie garantiert noch in irgendeiner Form - sei es auch nur minimal - umgebaut werden. 
+
+Obschon es ja zwei paar Schuhe sind, gehören die beiden Prozesse irgendwie zusammen. Denn auch beim Datenumbau fliessen die Daten von A nach B.
+
+Warum beschäftigt dieses Thema uns jetzt konkret? Dazu muss man ein wenig ausholen: Ein absolutes Fundament unserer KGDI ist die *zentrale Datenhaltung*. Das bedeutet, dass die kantonalen Geodaten in unserem Amt (resp. in unserer Infrastruktur) liegen. Das Amt A hat - falls gewünscht - einfachen Zugriff auf Daten des Amtes B. Unser Amt koordiniert alles und kümmert sich auch um die Datenbereitstellung gegenüber internen und externen Kunden. Seien es blosse WebGIS-Kärtchen oder die Abgabe der Rohdaten. Die Ämter müssen/dürfen keine eigene GIS-Infrastruktur aufbauen. 
+
+Vielleicht wurde dieser Grundsatz der zentralen Datenhaltung über die Jahre etwas überinterpretiert: Zentrale Datenhaltung hiess dann auch, dass jede GIS-Applikation direkt mit unserer *einzigen* Datenbank arbeiten muss. Und über die Jahre hinweg haben sich in den Ämtern etliche Applikationen angesammelt, die zwar einen kleinen Raumbezug haben und dementsprechend geografische Daten speichern müssen aber nicht von uns programmiert wurden. Oftmals wissen wir nicht genau, was diese Fremdapplikationen genau machen, geschweige denn wie sie funktionieren. Eine Art Blackbox also.
+
+Schematisch sieht die Architektur somit so aus:
+
+image::sogis_alt.png[alt="Ist-Architektur", align="center"]
+
+Die blauen Anwendungen sind unsere Kernkomponenten (Desktop- und WebGIS) und selber programmierte Tools. Diese Anwendungen haben wir im Griff und wir kennen die Anforderungen und Problemchen relativ gut. Die grünen Anwendungen sind die Fremdapplikationen, die ebenfalls _direkten_ Lese- und Schreibzugriff auf unsere einzige Datenbank haben. Der rote Kasten symbolisiert die exportierten Daten aus der Datenbank.
+
+Diese *zentrale Datenbank* führte dann beispielhaft zu folgenden Problemfällen:
+
+(1) Die Fremd-Webapplikation läuft nicht auf unseren Servern, sondern auf den Servern des Informatikamtes (AIO). Die Applikation greift aber auf unsere Datenbank zu (lesend und schreibend). Weil wir relativ (seeeeehr) lange mit dem Datenbankupdate zugewartet haben, konnte auch der Hersteller der Fremdapplikation seine Software nie updaten und die Userexperience war nicht sonderlich gut, da kein Bugfixing-Release etc. eingespielt werden konnte. Schlussendlich war niemand mit der Situation zufrieden (Hersteller, AIO, Anwender und wir).
+
+(2) Die Fremd-Webapplikation macht bei jeder Abfrage in unserer Datenbank dutzende (temporäre) Tabellen und löscht sie wieder. Wegen den vielen Vacuum-Prozessen in unserer Datenbank füllte es die Festplatte.
+
+(3) Ein Hersteller einer Fremdapplikation wurde verknurrt seine Applikation von Oracle nach PostgreSQL umzuschreiben, damit die Daten bei uns gespeichert werden können. Leider hat der Hersteller mit PostgreSQL nicht viel Erfahrung und so schlichen sich unnötig viele Bugs in die Software. Ein grausiger Bug war das Verbrauchen von DB-Connections ohne sie wieder freizugeben. Das führte dazu, dass sämtliche QGIS-Benutzer keine Tabellen in QGIS mehr laden konnten, weil eben alle Verbindungen aufgebraucht waren.
+
+Für mich absolut entscheidend ist die Tatsache, dass Fremdapplikationen *keinen negativen* Impact auf unsere Datenbank im engeren Sinne und auf unsere Infrastruktur im weiteren Sinne haben dürfen. Konsequenterweise bedeutet das, dass viele oder alle dieser Fremdapplikationen ihre eigene Datenhaltung mitbringen müssen. Was bei den meisten bereits der Standardfall ist. Viele der Daten dieser Anwendungen sollen trotzdem noch in unsere GDI integriert werden (Interesse anderer Ämter, Webkarten, Publikation als WMS etc.). Jedoch bestimmen *wir* den Zeitpunkt und das Bereitstellen von Ressourcen (CPU, DB-Connections etc.) für die Integration und verlassen uns nicht auf das Prinzip Hoffnung, das schon nichts Schlimmes passiert.
+
+Was wir also brauchen, ist eine rock-solide und generische Lösung für die Integration von Daten, die in einem Fremdsystem liegen. Bereits heute importieren wir viele Daten aus verschiedenen Systemen. Jedoch wird dazu immer und immer wieder ein neues Skript geschrieben. Dieses quick 'n' dirty Skript verleitet leider auch häufig dazu die Trennung von Integration und Datenumbau nicht einzuhalten, was dann wiederum den Betrieb und Unterhalt dieses Importprozesses erschwert. Vielmehr schwebt uns etwas vor, dass man konfigurien kann und nicht neu programmieren muss. Super viele Formate müssen nicht unterstützt werden: am Ehesten wohl CSV, Oracle-DB, PostGIS-DB, INTERLIS, Shapefiles, GeoPackage. Zudem sollte der Integrationsprozess sowohl manuell wie auch mittels Scheduler ausführbar sein. 
+
+Konzeptionell haben sich da z.B. die Spring-Leute mit http://docs.spring.io/spring-batch/reference/html/spring-batch-intro.html[Spring] http://docs.spring.io/spring-batch/reference/html/domain.html[Batch] schon mal ein paar gute Gedanken gemacht (resp. https://www.jcp.org/en/jsr/detail?id=352[JSR-352]).
+
+Zusätzlich zu diesem &laquo;Datenintegrator&raquo; braucht es noch eine lightweight REST-Schnittstelle. Damit können Anwendungen schnell und schmerzlos an Daten kommen, die in unserer Datenbank liegen und falls die Berechtigung vorhanden ist auch verändern und zurückschreiben. Die REST-Schnittstelle ist nicht dazu gedacht Terabyte an Daten zu lesen und zu schreiben, sondern vielmehr für einzelne, wenige Erfassungen von z.B. Neophyten, Unfällen und dergleichen. Oftmals tuen sich ja Nicht-GIS-Softwarehersteller relativ schwer mit einer &laquo;GIS-Schnittstelle&raquo;. Damit man solche Fragestellungen nicht mit dem GIS-Schlachtrosse _WFS_ beantworten muss, ist neu die REST-Schnittstelle da. JSON versteht ja wirklich jeder Webentwickler. Und auch mit einem GET / POST / PUT und DELETE kann man umgehen. Wie im http://blog.sogeo.services/blog/2016/12/24/kgdi-the-next-generation-1.html[Metamodell] vorgesehen, wird man bei jedem registrierten Datensatz wählen können, ob dieser als REST-Schnittstelle exponiert werden soll.
+
+In Zukunft möchten wir auch unsere eigene Datenbank funktional trennen: Es wird eine Erfassungs-Datenbank, eine Publikations-Datenbank und eine Archiv-Datenbank geben. Heute passiert das alles in einer Datenbank in der gleichen Tabelle. Das ist zu starr, zu unflexibel und zu fehleranfällig. Zudem passt die angedachte Architektur besser zum Ansatz der *model driven GDI* (dazu  in einem späteren Beitrag mehr). Für das Überführen der Daten von der Erfassungsdatenbank in die Publikationsdatenbank ist ein Datenumbau notwendig. Dieser Datenumbau geht einher mit einer Datenintegration. Nur halt innerhalb unserer eigenen Infrastruktur. Aufgrund der Tatsache, dass entweder das Ziel- oder Quellsystem in unserem Fall eine relationale Datenbank ist, kann man sich überlegen, ob der Datenumbau nicht auf Funktionen eben dieser Systeme zu beschränken ist resp. in diesen Systemen passieren soll. Damit ist auch die Lingua Franca für den Datenumbau klar: SQL. Für die Umsetzung kann man sich verschiedene Varianten vorstellen: Views, selber geschriebene DB-Funktionen oder pures SQL, das abgesetzt wird. Zum jetzigen Zeitpunkt ist mir die &laquo;pure-SQL&raquo;-Lösung am Liebsten. 
+
+Die Idee eines solchen Werkzeuges scheint jedenfalls nicht super originär zu sein: https://github.com/geops/batyr[batyr].
+
+In Zukunft dürfte es bei uns also circa so aussehen:
+
+image::sogis_neu.png[alt="Soll-Architektur", align="center"]
+
+Das wahrscheinlich Wichtigste bei diesem Umkrempeln ist aber, dass wir die Softwarehersteller gut informieren, gut dokumentieren und eine gewisse Strenge an den Tag legen. Es bringt nichts, wenn wir bei jeder neuen Herausforderung gleich wieder in alte Verhaltensmuster zurückfallen und das Rad neu erfinden wollen, nur damit es kurzfristig schneller funktioniert.

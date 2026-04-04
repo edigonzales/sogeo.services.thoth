@@ -1,0 +1,224 @@
+---
+= INTERLIS leicht gemacht #22 - Python goes INTERLIS / INTERLIS goes Python
+Stefan Ziegler
+2021-02-02
+:thoth-type: post
+:thoth-status: published
+:thoth-tags: INTERLIS,Java,ili2db,Python,GraalVM
+:idprefix:
+---
+Auf einem jungfräulichen Betriebssystem installiere ich als erstes Java. Eigentlich als zweites, denn um verschiedene Java-Versionen einfach installieren zu können, verwende ich https://sdkman.io/[SDKMAN!]. Aber es gibt auch genauso die Liebhaber von Python. Insbesondere in der Geo-Welt scheint Python viele Anhänger zu haben. 
+
+Es geschehen ja noch Zeichen und Wunder und INTERLIS wird immer wie mehr verwendet. Eine INTERLIS-&laquo;Produktefamilie&raquo; -  namentlich `ili2db` und `ilivalidator` ist mit Java geschrieben. Das wiederum passt nun nicht so ganz in die Geo-Welt, die lieber Python verwendet. Ebenso wenig matcht das mit QGIS-Plugins (insb. Model Baker), die mit INTERLIS umgehen wollen resp. müssen. Was tun? Es gibt verschiedene Möglichkeiten:
+
+https://www.jython.org/[Jython] ist eine Java-Implementierung von Python. Das bedeutet in erster Linie, dass eine JVM benötigt wird, um Python-Skripte auszuführen. Ansonsten kann aber &laquo;ganz normal&raquo; Python programmiert werden. Leider gibt es keine 3er-Version, sondern es wird nur Python 2.7 unterstützt. Die Unterstützung von bekannten Python-Bibliotheken und -Frameworks ist relativ gut. Das Interessante ist aus Sicht INTERLIS, dass auch beliebige Java-Klassen im Python-Code verwendet werden können, ohne dass System-Calls abgesetzt werden müssen. Wenn ich mit `ili2gpkg` Daten in eine GeoPackage-Datei importieren will, sieht das wie folgt aus:
+
+[source,python,linenums]
+----
+#!/usr/bin/env jython
+import sys
+
+from ch.ehi.ili2db.base import Ili2db
+from ch.ehi.ili2db.base import Ili2dbException
+from ch.ehi.ili2db.gui import Config
+from ch.ehi.ili2gpkg import GpkgMain
+
+print sys.path
+
+settings = Config()
+GpkgMain().initConfig(settings)
+settings.setFunction(Config.FC_IMPORT)
+settings.setDoImplicitSchemaImport(True)
+settings.setModels("DM01AVCH24LV95D")
+settings.setDefaultSrsCode("2056")
+settings.setNameOptimization(Config.NAME_OPTIMIZATION_TOPIC)
+settings.setCreateEnumDefs(Config.CREATE_ENUM_DEFS_MULTI)
+settings.setDbfile("254900.gpkg")
+Config.setStrokeArcs(settings, Config.STROKE_ARCS_ENABLE)
+settings.setValidation(False)
+settings.setItfTransferfile(True)
+settings.setDburl("jdbc:sqlite:" + settings.getDbfile())
+settings.setXtffile("254900.itf")
+try:
+    Ili2db.run(settings, None)
+except Ili2dbException, value: 
+    print value
+----
+
+Dem Skript muss man via `JYTHONPATH` die Java-Klassen bekannt machen:
+
+[source,python,linenums]
+----
+export JYTHONPATH=~/apps/ili2gpkg-4.4.5/ili2gpkg-4.4.5.jar:~/apps/ili2gpkg-4.4.5/libs/antlr-2.7.7.jar:~/apps/ili2gpkg-4.4.5/libs/base64-2.3.9.jar:~/apps/ili2gpkg-4.4.5/libs/ehibasics-1.4.0.jar:~/apps/ili2gpkg-4.4.5/libs/ehisqlgen-1.13.8.jar:~/apps/ili2gpkg-4.4.5/libs/ili2c-core-5.1.5.jar:~/apps/ili2gpkg-4.4.5/libs/ili2c-tool-5.1.5.jar:~/apps/ili2gpkg-4.4.5/libs/ili2db-4.4.5.jar:~/apps/ili2gpkg-4.4.5/libs/iox-api-1.0.3.jar:~/apps/ili2gpkg-4.4.5/libs/iox-ili-1.21.4.jar:~/apps/ili2gpkg-4.4.5/libs/jackson-core-2.9.7.jar:~/apps/ili2gpkg-4.4.5/libs/jts-core-1.14.0.jar:~/apps/ili2gpkg-4.4.5/libs/sqlite-jdbc-3.8.11.2.jar 
+---- 
+
+Zukunftsträchtiger (?) und sicher hipper ist eine andere Python-Implementierung. Nämlich die Python-Implementierung für die https://www.graalvm.org/[GraalVM]. GraalVM bietet zudem Implmentierungen für Java, Ruby, R und Node.js an und ermöglicht wirklich polyglote Anwendungen. Die Python-3-Implementierung steckt leider noch in den Kinderschuhen. Das merkt man insbesondere, wenn man beliebte Frameworks und Bibliotheken verwenden will. Viele von diesen werden nicht unterstützt. Der Fokus der Entwickler liegt momentan bei Numpy und SciPy. Im Prinzip funktioniert es wie mit Jython:
+
+[source,python,linenums]
+----
+import java
+
+Config = java.type('ch.ehi.ili2db.gui.Config')
+Ili2db = java.type('ch.ehi.ili2db.base.Ili2db')
+Ili2dbException = java.type('ch.ehi.ili2db.base.Ili2dbException')
+GpkgMain = java.type('ch.ehi.ili2gpkg.GpkgMain')
+
+settings = Config()
+GpkgMain().initConfig(settings)
+settings.setFunction(Config.FC_IMPORT)
+settings.setDoImplicitSchemaImport(True)
+settings.setModels("DM01AVCH24LV95D")
+settings.setDefaultSrsCode("2056")
+settings.setNameOptimization(Config.NAME_OPTIMIZATION_TOPIC)
+settings.setCreateEnumDefs(Config.CREATE_ENUM_DEFS_MULTI)
+settings.setDbfile("254900.gpkg")
+Config.setStrokeArcs(settings, Config.STROKE_ARCS_ENABLE)
+settings.setValidation(False)
+settings.setItfTransferfile(True)
+settings.setDburl("jdbc:sqlite:" + settings.getDbfile())
+settings.setXtffile("254900.itf")
+try:
+    Ili2db.run(settings, None)
+except Ili2dbException as value: 
+    print(value)
+----
+
+In dieser Variante muss der `CLASSPATH` korrekt gesetzt werden:
+
+[source,python,linenums]
+----
+export CLASSPATH=~/apps/ili2gpkg-4.4.5/ili2gpkg-4.4.5.jar:~/apps/ili2gpkg-4.4.5/libs/antlr-2.7.7.jar:~/apps/ili2gpkg-4.4.5/libs/base64-2.3.9.jar:~/apps/ili2gpkg-4.4.5/libs/ehibasics-1.4.0.jar:~/apps/ili2gpkg-4.4.5/libs/ehisqlgen-1.13.8.jar:~/apps/ili2gpkg-4.4.5/libs/ili2c-core-5.1.5.jar:~/apps/ili2gpkg-4.4.5/libs/ili2c-tool-5.1.5.jar:~/apps/ili2gpkg-4.4.5/libs/ili2db-4.4.5.jar:~/apps/ili2gpkg-4.4.5/libs/iox-api-1.0.3.jar:~/apps/ili2gpkg-4.4.5/libs/iox-ili-1.21.4.jar:~/apps/ili2gpkg-4.4.5/libs/jackson-core-2.9.7.jar:~/apps/ili2gpkg-4.4.5/libs/jts-core-1.14.0.jar:~/apps/ili2gpkg-4.4.5/libs/sqlite-jdbc-3.8.11.2.jar  
+----
+
+Werden, wie in diesem Fall, Java-Bibliotheken verwendet, muss Python im JVM-Modus gestartet werden (was wiederum die Startzeit fast quälend langsam macht):
+
+[source,python,linenums]
+----
+graalpython --jvm --vm.cp=$CLASSPATH ili2db.py
+----
+
+Je nach Anwendungsfall sind das valable Lösungen. Insbesondere auch weil die Hürde einer Java-Runtime in Zeiten von Docker je nachdem sehr tief ist. Wo dieser Ansatz nicht funktioniert, ist bei QGIS-Plugins. Im Model-Baker-Plugin sind die System-Calls relativ elaboriert und sicher ziemlich robust. Andererseits braucht man immer noch eine Java-Runtime, was mich in diesem konkreten Fall stört. Mit der GraalVM können Anwendungen zu http://blog.sogeo.services/blog/2019/02/23/graalvm-p1-interlis-polyglot-gemacht.html[nativem Code kompiliert] werden und brauchen zur Laufzeit keine Java-Runtime mehr. Tönt cool, ist hip, hat aber auch Nachteile. Es können jedoch nicht nur komplette Java-Awendungen zu nativem Code kompiliert werden, sondern auch einzelne (statische) Java-Methoden zu shared libraries (*.so, *.dylib, *.dll). Diese wiederum - so die Idee - könnte man mittels Python-Bindings in QGIS-Plugins ansprechen. Somit wäre man die Laufzeitanforderung Java los. Gesagt getan:
+
+[source,java,linenums]
+----
+package ch.so.agi.ili2db.libnative;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Paths;
+import java.util.Map;
+
+import org.graalvm.nativeimage.IsolateThread;
+import org.graalvm.nativeimage.c.function.CEntryPoint;
+import org.graalvm.nativeimage.c.type.CCharPointer;
+import org.graalvm.nativeimage.c.type.CTypeConversion;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import ch.ehi.ili2db.base.Ili2db;
+import ch.ehi.ili2db.base.Ili2dbException;
+import ch.ehi.ili2db.gui.Config;
+import ch.ehi.ili2pg.PgMain;
+
+public class Ili2dbLib {
+    
+    @CEntryPoint(name = "ili2pg")
+    public static int ili2pg(IsolateThread thread, CCharPointer settings) {
+        try {
+            Config config = json2config(CTypeConversion.toJavaString(settings));                        
+            Ili2db.run(config, null);
+        } catch (Ili2dbException e) {
+            e.printStackTrace();
+            System.err.println(e.getMessage());
+            return 1;
+        } catch (IOException e) {
+            e.printStackTrace();
+            System.err.println(e.getMessage());
+            return 1;
+        }
+        return 0;
+    }
+    
+    public static Config json2config(String jsonString) throws IOException {
+        ObjectMapper mapper = new ObjectMapper();
+        Map<String, Object> map = mapper.readValue(jsonString, Map.class);
+        
+        Config config = new Config();
+        new PgMain().initConfig(config);
+        
+        if (!map.containsKey("function")) {
+            throw new IllegalArgumentException("missing function parameter");
+        } else {
+            String function = (String) map.get("function");
+            
+            if (function.equalsIgnoreCase("import")) {
+                config.setFunction(Config.FC_IMPORT);
+            }
+        }
+        
+        // TODO if/else/exceptions etc.
+        config.setDoImplicitSchemaImport(true);
+        config.setConfigReadFromDb(true);
+        config.setModels((String) map.get("models"));
+        
+        config.setDbhost((String) map.get("dbhost"));
+        config.setDbport((String) map.get("dbport"));
+        config.setDbusr((String) map.get("dbusr"));
+        config.setDbusr((String) map.get("dbusr"));
+        config.setDbpwd((String) map.get("dbpwd"));
+        config.setDburl((String) map.get("dburl"));
+        config.setDbschema((String) map.get("dbschema"));
+
+        config.setDefaultSrsCode((String) map.get("defaultSrsCode"));
+
+        if (map.containsKey("strokeArcs")) {
+            Config.setStrokeArcs(config, Config.STROKE_ARCS_ENABLE);
+        }
+        
+        if ((Boolean) map.get("disableValidation")) {
+            config.setValidation(false);
+        }
+    
+        if ((Boolean) map.get("doSchemaImport")) {
+            config.setDoImplicitSchemaImport(true);
+        }
+
+        String fileName = (String) map.get("file");
+        if (fileName.toLowerCase().endsWith("itf")) {
+            config.setItfTransferfile(false);
+        } else {
+            config.setItfTransferfile(true);
+        }
+        config.setXtffile(new File(fileName).getAbsolutePath());
+
+        return config;
+    }
+}
+----
+
+Es gibt bei der Implementierung einer solchen statischen Methode einige Einschränkungen. Zum einen, dass sie eben statisch sein muss und zum anderen, dass die Übergabe von Parametern recht eingeschränkt ist. Viel mehr als Integer, Double und String geht nicht. Beliebige Objekte können nicht ausgetauscht werden, was das Vorhaben nicht einfacher macht. Eine Möglichkeit ist, dass die Objekte (die übergeben werden sollen) nach JSON serialisiert und als String übergeben werden. Hat man den Java-Code, muss man die Methode zu einer shared library kompilieren (konkret hier für Linux):
+
+[source,python,linenums]
+----
+./gradlew clean lib:build shadowJar && \
+native-image --no-fallback --no-server -cp lib/build/libs/lib-all.jar --shared -H:Name=libili2db 
+----
+
+Das Produkt sind verschiedene Headerfiles und die Bibliothek selbst. Die simpelste Form von Python-Bindinds ist der Weg über `ctypes`. Das ergibt circa folgenden Code:
+
+[source,python,linenums]
+----
+settings = "{ \"dbhost\" : \"192.168.56.1\", \"dbport\" : \"54321\", \"dbdatabase\" : \"edit\", \"dbusr\" : \"admin\", \"dbpwd\" : \"admin\", \"dburl\" : \"jdbc:postgresql://192.168.56.1:54321/edit\", \"dbschema\" : \"npl_2551\", \"defaultSrsCode\" : \"2056\", \"strokeArcs\" : \"enable\", \"disableValidation\" : true, \"models\" : \"SO_Nutzungsplanung_20171118\", \"doSchemaImport\" : true, \"function\" : \"import\", \"file\" : \"./lib/src/test/data/2551.xtf\" }"
+print(settings)
+
+from ctypes import *
+dll = CDLL("./libili2db.so")
+isolate = c_void_p()
+isolatethread = c_void_p()
+dll.graal_create_isolate(None, byref(isolate), byref(isolatethread))
+dll.ili2pg.restype = int
+result = dll.ili2pg(isolatethread, c_char_p(bytes(settings, "utf8")))
+result
+----
+
+Ein wenig syntactic sugar drum herum und es sieht gar nicht mehr so schlimm aus. Ein Nachteil ist, dass zusätzlicher `ili2db`-Code entstehen würde, der ebenfalls von irgend jemandem gepflegt werden will. 
