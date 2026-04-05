@@ -7,7 +7,7 @@ Stefan Ziegler
 :thoth-tags: NDVI,Orthophoto,Orthofoto,Raster,GDAL,convert,ImageMagick
 :idprefix:
 ---
-Der Kanton Solothurn lässt jedes Jahr ein Drittel seiner Fläche neu befliegen und lässt daraus neue http://www.sogis.ch/daten[Orthofotos] erstellen. Als Endprodukt werden GeoTIFF mit den vier Kanälen _Rot_, _Grün_, _Blau_ und _nahes Infrarot_ ausgeliefert. Daraus werden anschliessend zwei abgeleitete Produkte erstellt: ein RGB-Orthofoto und ein FCIR-Orthofoto. «FCIR» steht für «false-colour infrared» und besteht aus den Kanälen _nahes Infrarot_, _Rot_ und _Grün_ und sieht dann in etwa so aus:
+Der Kanton Solothurn lässt jedes Jahr ein Drittel seiner Fläche neu befliegen und lässt daraus neue http://www.sogis.ch/daten[Orthofotos] erstellen. Als Endprodukt werden GeoTIFF mit den vier Kanälen Rot, Grün, Blau und nahes Infrarot ausgeliefert. Daraus werden anschliessend zwei abgeleitete Produkte erstellt: ein RGB-Orthofoto und ein FCIR-Orthofoto. «FCIR» steht für «false-colour infrared» und besteht aus den Kanälen nahes Infrarot, Rot und Grün und sieht dann in etwa so aus:
 
 image::fcir.jpg[alt="FCIR Beispiel", align="center"]
 
@@ -22,7 +22,7 @@ include::create_ndvi.sh[]
 
 *Zeilen 3 - 4*: Sind nicht relevant. Die Zeilen werden gebraucht, um dem Skript mitzuteilen, dass eine bestimmte GDAL-Version verwendet werden soll.
 
-*Zeile 6*: Hier beginnt die for-Schleife, die jede einzelne Orthofoto-Kachel verarbeitet. Da schlussendlich nur die Kanäle _Rot_ und _nahes Infrarot_ interessieren, kann das FCIR-Orthofoto für die Berechnung verwendet werden.
+*Zeile 6*: Hier beginnt die for-Schleife, die jede einzelne Orthofoto-Kachel verarbeitet. Da schlussendlich nur die Kanäle Rot und nahes Infrarot interessieren, kann das FCIR-Orthofoto für die Berechnung verwendet werden.
 
 *Zeilen 8 - 11*: Parameter für die verschiedenen (temporären) Dateien.
 
