@@ -56,7 +56,7 @@ Wie kann man verhindern, dass die `ID` wirklich nur einmal vorkommt ist? Und wie
 
 Als erstes braucht es ein Metamodell. Ein unvollständiges kann z.B. so aussehen:
 
-[source,xml,linenums]
+[source,interlis,linenums]
 ----
 INTERLIS 2.4;
 
@@ -111,7 +111,7 @@ Die Klasse `Amt` im Topic `Amt` benötige ich zum Vorhalten der Ämterinformatio
 
 Es braucht einen GRETL-Job, der sowohl lokal beim Entwickeln resp. bei der Bearbeitung der Informationen ausgeführt werden kann wie auch in einer Pipeline. Es wird mehrere Jobs geben, da sie verschiedene Zwecke erfüllen müssen. Geht es nur darum zu prüfen, ob die ID eindeutig ist, muss ich die erwähnte Konfigurationsdatei für die Datenabgabe-Software nicht herstellen. Und es wird weitere Konfigurationsdateien geben, die ebenfals mittels GRETL-Jobs hergestellt werden (und weiteren Klassen im Metamodell). Der GRETL-Job für das Herstellen der Konfigurationsdatei sieht so aus:
 
-[source,groovy,linenums]
+[source,gradle,linenums]
 ----
 import java.nio.file.Paths
 import ch.so.agi.gretl.tasks.*
@@ -192,7 +192,7 @@ tasks.register('uploadToExoscale', S3Upload) {
 
 Als erstes importiere ich die Stammdaten (mit den Ämterinfos) in eine DuckDB. Anschliessend erstelle ich ein weiteres Schema `konfig` in der gleichen DuckDB. In diesem Schema muss ich aus den vorliegenden JSON-Dateien (lokal und S3) und den Ämterinfos die Klasse `ThemaPublikation` abfüllen. Ist das gemacht, exportiere ich die Klasse in eine XTF-Datei / in die Konfigurationsdatei. Das Wichtigste passiert im Task `createKonfigData`. Hier wird einzig mit SQL und DuckDB-Magie die Klasse `ThemaPublikation` befüllt:
 
-[source,groovy,linenums]
+[source,sql,linenums]
 ----
 CREATE OR REPLACE SECRET asecret (
     TYPE S3,
