@@ -1,5 +1,5 @@
 ---
-= HTTP-Statuscode 206 - Let\'s get started
+= HTTP-Statuscode 206 - Let's get started
 Stefan Ziegler
 2023-12-29
 :thoth-type: post
