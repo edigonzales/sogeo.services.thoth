@@ -15,15 +15,15 @@ Was das Plugin (in Teilen kann) erkläre ich am Besten mit einem Transform-Beisp
 
 image::ili2db01.png[alt="Apache Hop", align="center"]
 
-Als erstes lesen wir alle Dateinamen mit der Endung .xtf aus einem Verzeichnis und bilden den Stream:
+Als erstes lesen wir alle Dateinamen mit der Endung `.xtf` aus einem Verzeichnis und bilden den Stream:
 
 image::ili2db02.png[alt="Apache Hop", align="center"]
 
-In unserem Fall aus dem Verzeichnis _/Users/stefan/tmp/xtf/_. Man darf ja nicht vergessen, nach der Auswahl des Verzeichnisses den &laquo;Add&raquo;-Button zu drücken. Sonst passiert nämlich nichts. Als nächstes fügen wir diesem Stream eine Spalte hinzu: Nämlich den Speicherort inkl. Dateinamen der GeoPackage-Datei, die aus jedem XTF erstellt werden soll:
+In unserem Fall aus dem Verzeichnis `/Users/stefan/tmp/xtf/`. Man darf ja nicht vergessen, nach der Auswahl des Verzeichnisses den &laquo;Add&raquo;-Button zu drücken. Sonst passiert nämlich nichts. Als nächstes fügen wir diesem Stream eine Spalte hinzu: Nämlich den Speicherort inkl. Dateinamen der GeoPackage-Datei, die aus jedem XTF erstellt werden soll:
 
 image::ili2db03.png[alt="Apache Hop", align="center"]
 
-Im Feld `Formula` schreibt man die Expression, die es braucht, um aus dem XTF-Dateinamen den Speicherort inkl. GPKG-Dateinamen pro Row zu erzeugen. Es ist halt so ein klassischer Feldrechner (interessanterweise basierend auf _Apache POI_. Leider fehlt sowas wie ein Extension Point, um eigene Funktionen registrieren zu können):
+Im Feld `Formula` schreibt man die Expression, die es braucht, um aus dem XTF-Dateinamen den Speicherort inkl. GPKG-Dateinamen pro Row zu erzeugen. Es ist halt so ein klassischer Feldrechner (interessanterweise basierend auf Apache POI. Leider fehlt sowas wie ein Extension Point, um eigene Funktionen registrieren zu können):
 
 image::ili2db04.png[alt="Apache Hop", align="center"]
 
